@@ -1,0 +1,24 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: go-template
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: go-template
+  # minReplicas is 1: the reference Storer (adapters.Database) is an in-memory
+  # map, one per pod, with no shared state. Raising this before swapping Storer for a
+  # real shared database (or making the cache authoritative) silently splits
+  # data across pods — a request can 404 on one pod for an item that exists
+  # on another, with no error to signal it. maxReplicas can still scale up
+  # under load; the unsafe default was the floor, not the ceiling.
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

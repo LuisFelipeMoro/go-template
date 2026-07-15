@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Dev overlay: verbose logging, full trace sampling, single-namespace.
+namespace: go-template-dev
+
+resources:
+  - ../../base
+
+images:
+  - name: go-template
+    newTag: dev
+
+# behavior: merge overrides only these keys on the base ConfigMap; the hash is
+# recomputed from the merged result, so a change here rolls the Deployment.
+configMapGenerator:
+  - name: go-template-config
+    behavior: merge
+    literals:
+      - APP_ENV=dev
+      - LOG_LEVEL=debug # dev only — prod stays at the errors-only default
+      - OTEL_SAMPLE_RATIO=1.0

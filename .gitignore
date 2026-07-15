@@ -1,32 +1,58 @@
-# If you prefer the allow list template instead of the deny list, see community template:
+# If you prefer the allow-list style instead, see:
 # https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+
+# --- Compiled binaries & libraries -------------------------------------------
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
-*.test
+# --- Build output ------------------------------------------------------------
+/bin/
+/dist/
 
-# Code coverage profiles and other test artifacts
+# --- Test & coverage artifacts -----------------------------------------------
+*.test
 *.out
 coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
+# --- Go workspace / vendoring ------------------------------------------------
 go.work
 go.work.sum
+# vendor/            # uncomment if you commit vendored dependencies
 
-# env file
+# --- Secrets & local environment (NEVER commit) ------------------------------
+# .env / .envrc may hold production secrets — keep them out of git. Commit a
+# non-secret .env.example instead.
 .env
+.env.*
+!.env.example
+.envrc
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# --- Node tooling (spec lint via npx, optional) ------------------------------
+node_modules/
+
+# --- Claude Code (personal, not shared) --------------------------------------
+.claude/settings.local.json
+
+# --- Planning artifacts (BMAD pipeline output — not part of the template) -----
+/docs/
+
+# --- Editor / IDE ------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS junk -----------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# --- Logs --------------------------------------------------------------------
+*.log
