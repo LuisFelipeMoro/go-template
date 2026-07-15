@@ -1,0 +1,8 @@
+extends: ["spectral:oas"]
+rules:
+  operation-operationId: error
+  operation-tags: warn
+  oas3-valid-media-example: error
+  no-$ref-siblings: error
+  oas3-unused-component: warn
+  info-contact: off

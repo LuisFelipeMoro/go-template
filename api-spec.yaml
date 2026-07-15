@@ -1,0 +1,332 @@
+openapi: "3.1.0"
+info:
+  title: "Go Template Service API"
+  description: "Sample item domain exposed by the Go 1.26 microservice template."
+  version: "1.0.0"
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: health
+    description: Liveness and readiness probes
+  - name: items
+    description: Sample item domain CRUD
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness probe
+      description: Returns 200 while the process is alive. Used by Kubernetes livenessProbe.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Returns 200 when ready for traffic, 503 while starting or draining. Used by Kubernetes readinessProbe.
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Service ready to receive traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        "503":
+          description: Service not ready (starting up or draining)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /v1/items:
+    post:
+      operationId: createItem
+      summary: Create an item
+      description: Validates the payload, persists the item, and publishes an item.created event.
+      tags: [items]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateItemRequest'
+      responses:
+        "201":
+          description: Item created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemResponse'
+        "400":
+          $ref: '#/components/responses/ValidationError'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "413":
+          $ref: '#/components/responses/PayloadTooLarge'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listItems
+      summary: List items with pagination
+      description: Returns an offset-paginated page of items. Max 100 rows per page.
+      tags: [items]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: rows
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Page of items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemListResponse'
+        "400":
+          $ref: '#/components/responses/ValidationError'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /v1/items/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getItem
+      summary: Get an item by id
+      description: Returns a single item by UUID.
+      tags: [items]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Item found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemResponse'
+        "400":
+          $ref: '#/components/responses/ValidationError'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateItem
+      summary: Update an item (partial)
+      description: Applies the provided fields to an existing item and publishes an item.updated event.
+      tags: [items]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateItemRequest'
+      responses:
+        "200":
+          description: Item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemResponse'
+        "400":
+          $ref: '#/components/responses/ValidationError'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "413":
+          $ref: '#/components/responses/PayloadTooLarge'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteItem
+      summary: Delete an item
+      description: Removes the item and publishes an item.deleted event.
+      tags: [items]
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Item deleted
+        "400":
+          $ref: '#/components/responses/ValidationError'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, not_ready]
+        version:
+          type: string
+
+    CreateItemRequest:
+      type: object
+      required: [name, quantity, price_cents]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        quantity:
+          type: integer
+          minimum: 0
+        price_cents:
+          type: integer
+          format: int64
+          minimum: 0
+
+    UpdateItemRequest:
+      type: object
+      description: "At least one field must be present."
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        quantity:
+          type: integer
+          minimum: 0
+        price_cents:
+          type: integer
+          format: int64
+          minimum: 0
+
+    ItemResponse:
+      type: object
+      required: [id, name, quantity, price_cents, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        quantity:
+          type: integer
+        price_cents:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ItemListResponse:
+      type: object
+      required: [items, page, rows, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemResponse'
+        page:
+          type: integer
+        rows:
+          type: integer
+        total:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      required: [error, message, request_id]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+        message:
+          type: string
+          description: Human-readable detail (never internal)
+        request_id:
+          type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Bearer token in the Authorization header. Enforced only when the service
+        runs with AUTH_ENABLED=true (the default template posture leaves /v1
+        open); health probes are always unauthenticated.
+
+  responses:
+    ValidationError:
+      description: Input validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Request body exceeds limit
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

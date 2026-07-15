@@ -1,0 +1,90 @@
+# Developer lifecycle for go-template.
+APP        := go-template
+MODULE     := github.com/luisfelipecoelho/go-template
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+COVER_MIN  := 85
+ENV        ?= dev
+
+# json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26.
+# Export it so every go invocation below — build, test, vet, govulncheck —
+# compiles the v2 packages. Remove once json/v2 graduates to the default.
+export GOEXPERIMENT := jsonv2
+LDFLAGS    := -s -w \
+	-X $(MODULE)/internal/cli.version=$(VERSION) \
+	-X $(MODULE)/internal/cli.commit=$(COMMIT) \
+	-X $(MODULE)/internal/cli.buildTime=$(BUILD_TIME)
+
+.DEFAULT_GOAL := help
+
+.PHONY: help build run run-worker test cover lint vuln tools hooks tidy clean \
+	docker-build compose-up compose-down k8s-render k8s-apply k8s-delete spec-lint
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+build: ## Build the binary into ./bin with version metadata
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(APP) ./cmd
+
+run: ## Run the HTTP server locally
+	go run ./cmd server
+
+run-worker: ## Run the worker locally
+	go run ./cmd worker
+
+test: ## Run all tests with the race detector
+	go test -race ./...
+
+cover: ## Run tests with coverage and enforce the $(COVER_MIN)% gate
+	go test -race -coverprofile=coverage.out -covermode=atomic ./cmd/... ./internal/... ./pkg/...
+	@go tool cover -func=coverage.out | tail -1
+	@go tool cover -func=coverage.out | tail -1 | awk '{gsub(/%/,"",$$3); if ($$3+0 < $(COVER_MIN)) {printf "coverage %.1f%% is below $(COVER_MIN)%%\n", $$3; exit 1}}'
+
+lint: ## gofmt check + go vet + golangci-lint (install via make tools)
+	@fmt_out=$$(gofmt -l .); if [ -n "$$fmt_out" ]; then echo "gofmt needed:"; echo "$$fmt_out"; exit 1; fi
+	go vet ./...
+	golangci-lint run
+
+vuln: ## Scan dependencies for known vulnerabilities
+	govulncheck ./...
+
+tools: ## Install lint/vuln tooling into GOPATH/bin
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+	go install golang.org/x/vuln/cmd/govulncheck@latest
+
+hooks: ## Install git hooks (blocks committing .env / .envrc files)
+	git config core.hooksPath .githooks
+	@echo "git hooks enabled from .githooks/"
+
+tidy: ## go mod tidy
+	go mod tidy
+
+clean: ## Remove build artifacts
+	rm -rf bin coverage.out
+
+docker-build: ## Build the production image
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t $(APP):$(VERSION) -t $(APP):latest .
+
+compose-up: ## Start server + worker + OTel collector locally
+	docker compose up --build -d
+
+compose-down: ## Stop the local stack
+	docker compose down
+
+k8s-render: ## Render an overlay (ENV=dev|staging|prod, default dev)
+	kubectl kustomize ops/k8s/overlays/$(ENV)
+
+k8s-apply: ## Apply an overlay to the current context (ENV=dev|staging|prod)
+	kubectl apply -k ops/k8s/overlays/$(ENV)
+
+k8s-delete: ## Delete an overlay from the current context (ENV=dev|staging|prod)
+	kubectl delete -k ops/k8s/overlays/$(ENV)
+
+spec-lint: ## Lint the OpenAPI contract
+	npx -y @stoplight/spectral-cli lint api-spec.yaml --ruleset .spectral.yaml

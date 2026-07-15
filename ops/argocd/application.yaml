@@ -1,0 +1,27 @@
+# Optional ArgoCD Application: makes this git repo the source of truth for the
+# prod deployment. ArgoCD watches deploy/k8s/overlays/prod and auto-syncs any
+# committed change to the cluster — config edits ship by merging a PR, never by
+# `kubectl`. Point one Application per environment at the matching overlay.
+#
+# Flux users: replace this with a Kustomization + GitRepository pair; the
+# overlay layout is identical.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: go-template-prod
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/luisfelipecoelho/go-template
+    targetRevision: main
+    path: deploy/k8s/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: go-template-prod
+  syncPolicy:
+    automated:
+      prune: true # deleting a resource from git deletes it from the cluster
+      selfHeal: true # drift from the git state is reverted automatically
+    syncOptions:
+      - CreateNamespace=true

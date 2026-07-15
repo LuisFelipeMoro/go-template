@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26 —
+# set it for every job so build, vet, test, and govulncheck compile the v2 pkgs.
+env:
+  GOEXPERIMENT: jsonv2
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Secret guard (no committed env files)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject committed .env / .envrc
+        run: |
+          # Any tracked env file other than .env.example is a hard failure —
+          # enforced server-side even if a contributor skipped `make hooks`.
+          offenders=$(git ls-files \
+            | grep -E '(^|/)\.env($|\.)|(^|/)\.envrc$' \
+            | grep -vE '(^|/)\.env\.example$' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::environment files must never be committed:"
+            printf '%s\n' "$offenders"
+            echo "Remove with: git rm --cached <file>  (commit .env.example instead)"
+            exit 1
+          fi
+          echo "no committed env files ✓"
+
+  gates:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Format
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: Test (race) + coverage gate
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./cmd/... ./internal/... ./pkg/...
+          go tool cover -func=coverage.out | tail -1
+          pct=$(go tool cover -func=coverage.out | tail -1 | awk '{gsub(/%/,"",$3); print $3}')
+          awk "BEGIN{ if ($pct+0 < 85) { print \"coverage \" $pct \"% below 85%\"; exit 1 } }"
+
+      - name: Vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  spec:
+    name: OpenAPI contract lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Spectral lint
+        run: npx -y @stoplight/spectral-cli lint api-spec.yaml --ruleset .spectral.yaml

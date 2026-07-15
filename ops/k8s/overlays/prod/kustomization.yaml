@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: go-template-prod
+
+resources:
+  - ../../base
+  - external-secret.yaml
+
+images:
+  - name: go-template
+    newTag: v1.0.0 # pin an immutable tag in prod; bump via commit (GitOps)
+
+configMapGenerator:
+  - name: go-template-config
+    behavior: merge
+    literals:
+      - APP_ENV=prod
+      - LOG_LEVEL=error
+      - OTEL_SAMPLE_RATIO=0.1 # sample 10% in prod to bound export cost
+      - MESSAGING_DRIVER=memory # switch to your real broker here (e.g. kafka)
+
+patches:
+  - path: deployment-patch.yaml
+  - path: hpa-patch.yaml

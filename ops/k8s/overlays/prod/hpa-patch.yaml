@@ -1,0 +1,10 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: go-template
+spec:
+  # Only safe once Storer is backed by a real shared database — see the
+  # comment in ops/k8s/base/hpa.yaml. Do not raise this while adapters.Database
+  # (the in-memory reference store) is still wired in the composition root.
+  minReplicas: 3
+  maxReplicas: 20

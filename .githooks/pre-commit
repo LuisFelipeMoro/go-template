@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blocks committing environment files that may contain secrets.
+# .env.example is the only permitted dotenv file.
+#
+# Install once:  make hooks   (sets core.hooksPath to .githooks)
+
+staged=$(git diff --cached --name-only --diff-filter=AM)
+
+blocked=$(printf '%s\n' "$staged" | grep -E '(^|/)\.env($|\.)|(^|/)\.envrc$' | grep -vE '(^|/)\.env\.example$')
+
+if [ -n "$blocked" ]; then
+	echo "✖ commit blocked: environment files must never be committed."
+	printf '%s\n' "$blocked" | sed 's/^/    /'
+	echo "  These are gitignored; if one is staged, unstage it:"
+	echo "    git rm --cached <file>"
+	echo "  Commit .env.example instead (non-secret template)."
+	exit 1
+fi
+
+exit 0

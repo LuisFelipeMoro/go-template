@@ -1,0 +1,50 @@
+services:
+  server:
+    build:
+      context: .
+      args:
+        VERSION: dev-compose
+    command: ["server"]
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: debug            # dev only — production stays at the errors-only default
+      HTTP_PORT: "8080"
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_SERVICE_NAME: go-template-server
+    depends_on:
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/app", "healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  worker:
+    build:
+      context: .
+      args:
+        VERSION: dev-compose
+    command: ["worker"]
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: debug
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_SERVICE_NAME: go-template-worker
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./ops/docker/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
