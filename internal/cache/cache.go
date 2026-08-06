@@ -1,8 +1,8 @@
-// Package cache is a domain-agnostic caching boundary, shaped like pkg/messaging: it
+// Package cache is a domain-agnostic caching boundary, shaped like internal/messaging: it
 // owns the Cache interface, a config-driven factory (New), and the built-in
 // implementations (noop, in-memory, Redis). A cache sits alongside the primary
 // store — it never replaces it — so a service can run a real database and a
-// Redis cache at the same time (see internal/domain/item/store). Callers cache by
+// Redis cache at the same time (see internal/item/adapters). Callers cache by
 // opaque key and bytes; serialization is the caller's concern.
 package cache
 

@@ -78,7 +78,7 @@ type MessagingConfig struct {
 	Driver string // MESSAGING_DRIVER: memory (default) | none. Extend the factory to add kafka, sqs, nats, ...
 }
 
-// HTTPClientConfig tunes the resilient outbound client in pkg/httpclient.
+// HTTPClientConfig tunes the resilient outbound client in internal/web/client.
 type HTTPClientConfig struct {
 	Timeout    time.Duration // HTTP_CLIENT_TIMEOUT (default 10s)
 	MaxRetries int           // HTTP_CLIENT_MAX_RETRIES (default 3, >=1 total attempts)
@@ -120,7 +120,7 @@ func load(get func(string) string) (Config, error) {
 		ShutdownTimeout: p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
 		LogLevel:        p.enum("LOG_LEVEL", "error", "debug", "info", "warn", "error"),
 		MaxBodyBytes:    p.int64Min("MAX_BODY_BYTES", 1048576, 1),
-		// Driver names are validated by their factory (pkg/messaging.New), so
+		// Driver names are validated by their factory (internal/messaging.New), so
 		// adding an adapter is a single-package change.
 		Cache: CacheConfig{
 			Driver:        p.str("CACHE_DRIVER", "none"),

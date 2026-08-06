@@ -26,7 +26,7 @@ type Option func(*Server)
 // WithGroupMiddleware appends middleware to the versioned /v1 group, applied in
 // order before the routes. The composition root builds the chain from the
 // middleware package and passes it here — so the server stays a pure engine and
-// never hardcodes a middleware. See internal/httpx/middleware.
+// never hardcodes a middleware. See internal/middleware.
 func WithGroupMiddleware(mw ...gin.HandlerFunc) Option {
 	return func(s *Server) { s.groupMiddleware = append(s.groupMiddleware, mw...) }
 }

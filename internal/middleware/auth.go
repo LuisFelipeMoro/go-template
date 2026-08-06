@@ -14,7 +14,7 @@ import (
 // Authenticator validates a bearer token from the Authorization header. It is
 // owned here (the consumer) so the server carries no dependency on any concrete
 // auth scheme; implementations (static API keys, JWT, OIDC) live in
-// internal/domain/auth and are injected by the composition root.
+// internal/auth and are injected by the composition root.
 type Authenticator interface {
 	Authenticate(ctx context.Context, token string) error
 }

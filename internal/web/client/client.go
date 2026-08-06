@@ -1,4 +1,4 @@
-// Package httpclient is a resilient outbound HTTP client for downstream calls
+// Package client is a resilient outbound HTTP client for downstream calls
 // (BFF aggregation, ingestion fetches, webhooks). It layers three concerns onto
 // the standard library: OpenTelemetry instrumentation (every request is a
 // traced span propagating W3C context), bounded retry with backoff, and a

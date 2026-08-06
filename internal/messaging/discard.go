@@ -7,7 +7,7 @@ import (
 )
 
 // Discard is a no-op Publisher and Consumer for services that do not use
-// messaging (BUS_DRIVER=none). Publish drops the message; Consume blocks until
+// messaging (MESSAGING_DRIVER=none). Publish drops the message; Consume blocks until
 // its context is cancelled, delivering nothing. The zero value is ready to use.
 type Discard struct{}
 
