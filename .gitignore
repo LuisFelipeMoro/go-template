@@ -35,6 +35,15 @@ go.work.sum
 # --- Node tooling (spec lint via npx, optional) ------------------------------
 node_modules/
 
+# --- Terraform (ops/aws) — state can contain secrets, never commit it --------
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
 # --- Claude Code (personal, not shared) --------------------------------------
 .claude/settings.local.json
 
