@@ -19,7 +19,7 @@ import (
 type Handler func(ctx context.Context, msg messaging.Message) error
 
 // Metrics records worker throughput. The concrete OTel implementation lives in
-// pkg/telemetry; this interface is owned here (the consumer) per Uber style.
+// internal/telemetry; this interface is owned here (the consumer) per Uber style.
 type Metrics interface {
 	MessageProcessed(ctx context.Context)
 	MessageFailed(ctx context.Context)

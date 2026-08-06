@@ -1,5 +1,5 @@
 // Package auth provides authenticators for the HTTP transport's Authenticator
-// seam (pkg/httpx). StaticKeys — the template default —
+// seam (internal/middleware). StaticKeys — the template default —
 // validates bearer tokens against a fixed allow-list with a constant-time
 // comparison. Swap it for JWT/OIDC by adding a type with the same Authenticate
 // method and wiring it in the composition root; the transport is unchanged.

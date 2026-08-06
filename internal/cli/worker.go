@@ -54,7 +54,7 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("building worker metrics: %w", err)
 	}
 
-	// The consumer adapter is chosen by BUS_DRIVER; "none" yields a no-op
+	// The consumer adapter is chosen by MESSAGING_DRIVER; "none" yields a no-op
 	// consumer so a worker with no real broker configured still runs cleanly.
 	_, consumer, busCloser, err := messaging.New(cfg.Messaging.Driver)
 	if err != nil {
