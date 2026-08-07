@@ -16,7 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// echoRoutes is a domain-free RouteRegistrar: /ping returns 200, /echo decodes a
+// discardLogger returns a logger that drops output; tests assert behaviour, not logs.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+// echoRoutes is a domain-free RouteRegister: /ping returns 200, /echo decodes a
 // body via BindJSON (exercising the 400/413 paths).
 type echoRoutes struct{}
 
@@ -29,13 +34,13 @@ func (echoRoutes) Register(rg *gin.RouterGroup) {
 	})
 }
 
-func newServer(t *testing.T, maxBody int64, opts ...Option) *Server {
+func newServer(t *testing.T, opts ...Option) *Server {
 	t.Helper()
-	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	log := discardLogger()
 	ready := NewReadiness()
 	ready.SetReady(true)
 	all := append([]Option{WithRoutes(echoRoutes{})}, opts...)
-	return NewServer(Config{MaxBodyBytes: maxBody, Env: "prod", Version: "test"}, log, ready, all...)
+	return NewServer(Config{Env: "prod", Version: "test"}, log, ready, all...)
 }
 
 func req(s *Server, method, path, body string) *httptest.ResponseRecorder {
@@ -50,7 +55,7 @@ func req(s *Server, method, path, body string) *httptest.ResponseRecorder {
 
 func TestRouting_AndHealth(t *testing.T) {
 	t.Parallel()
-	s := newServer(t, 1<<20)
+	s := newServer(t)
 	assert.Equal(t, http.StatusOK, req(s, http.MethodGet, "/v1/ping", "").Code)
 	assert.Equal(t, http.StatusOK, req(s, http.MethodGet, "/healthz", "").Code)
 	assert.Equal(t, http.StatusOK, req(s, http.MethodGet, "/readyz", "").Code)
@@ -58,9 +63,9 @@ func TestRouting_AndHealth(t *testing.T) {
 
 func TestReadyz_503WhenNotReady(t *testing.T) {
 	t.Parallel()
-	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	log := discardLogger()
 	ready := NewReadiness() // not ready
-	s := NewServer(Config{Env: "prod", MaxBodyBytes: 1 << 20}, log, ready, WithRoutes(echoRoutes{}))
+	s := NewServer(Config{Env: "prod"}, log, ready, WithRoutes(echoRoutes{}))
 	rec := req(s, http.MethodGet, "/readyz", "")
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Contains(t, rec.Body.String(), "not_ready")
@@ -68,7 +73,7 @@ func TestReadyz_503WhenNotReady(t *testing.T) {
 
 func TestBindJSON_Errors(t *testing.T) {
 	t.Parallel()
-	s := newServer(t, 1<<20)
+	s := newServer(t)
 	// unknown field / malformed → 400 validation
 	rec := req(s, http.MethodPost, "/v1/echo", `{"x":1,"y":2`)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -79,9 +84,9 @@ func TestBindJSON_Errors(t *testing.T) {
 
 func TestStartStop_GracefulDrain(t *testing.T) {
 	t.Parallel()
-	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	log := discardLogger()
 	ready := NewReadiness()
-	s := NewServer(Config{Port: 0, Env: "prod", MaxBodyBytes: 1 << 20}, log, ready, WithRoutes(echoRoutes{}))
+	s := NewServer(Config{Port: 0, Env: "prod"}, log, ready, WithRoutes(echoRoutes{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)

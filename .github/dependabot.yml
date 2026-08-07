@@ -1,0 +1,33 @@
+# Dependency updates. Without this, nothing tells you a dependency has shipped a
+# security fix — govulncheck in CI only fails once a CVE is already published
+# against the version you pinned, and only on a run you happen to trigger.
+version: 2
+updates:
+  # Go modules.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patch/minor bumps keeps review load sane; major
+      # versions stay separate because they need a human to read the changelog.
+      go-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by the CI workflow — an unmaintained or compromised
+  # action is a supply-chain path into the build, so it needs the same cadence.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # The runtime base image (distroless) in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

@@ -7,6 +7,12 @@ BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 COVER_MIN  := 85
 ENV        ?= dev
 
+# Tool versions are pinned and MUST match .github/workflows/ci.yml. With
+# @latest, a tool that gains a check between your run and CI's fails the build
+# only after you push — local and CI must reach the same verdict.
+GOLANGCI_VERSION  := v2.12.2
+GOVULNCHECK_VERSION := v1.6.0
+
 # json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26.
 # Export it so every go invocation below — build, test, vet, govulncheck —
 # compiles the v2 packages. Remove once json/v2 graduates to the default.
@@ -50,9 +56,9 @@ lint: ## gofmt check + go vet + golangci-lint (install via make tools)
 vuln: ## Scan dependencies for known vulnerabilities
 	govulncheck ./...
 
-tools: ## Install lint/vuln tooling into GOPATH/bin
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-	go install golang.org/x/vuln/cmd/govulncheck@latest
+tools: ## Install lint/vuln tooling into GOPATH/bin (versions pinned to CI)
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 hooks: ## Install git hooks (blocks committing .env / .envrc files)
 	git config core.hooksPath .githooks

@@ -29,10 +29,18 @@ func NewDatabase() *Database {
 	return &Database{items: make(map[string]item.Item)}
 }
 
+// checkCtx returns a wrapped error if ctx is done, naming the aborted verb.
+func checkCtx(ctx context.Context, verb string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", verb, err)
+	}
+	return nil
+}
+
 // Create stores a new item; the id must not already exist.
 func (d *Database) Create(ctx context.Context, itm item.Item) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("creating item: %w", err)
+	if err := checkCtx(ctx, "creating item"); err != nil {
+		return err
 	}
 
 	d.mu.Lock()
@@ -46,8 +54,8 @@ func (d *Database) Create(ctx context.Context, itm item.Item) error {
 
 // QueryByID returns a copy of the stored item.
 func (d *Database) QueryByID(ctx context.Context, id string) (item.Item, error) {
-	if err := ctx.Err(); err != nil {
-		return item.Item{}, fmt.Errorf("querying item: %w", err)
+	if err := checkCtx(ctx, "querying item"); err != nil {
+		return item.Item{}, err
 	}
 
 	d.mu.RLock()
@@ -62,8 +70,8 @@ func (d *Database) QueryByID(ctx context.Context, id string) (item.Item, error) 
 // Query returns one page of items ordered by CreatedAt then ID, plus the total
 // count. Pages beyond the range return an empty slice.
 func (d *Database) Query(ctx context.Context, page item.Page) ([]item.Item, int, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, 0, fmt.Errorf("querying items: %w", err)
+	if err := checkCtx(ctx, "querying items"); err != nil {
+		return nil, 0, err
 	}
 
 	d.mu.RLock()
@@ -91,8 +99,8 @@ func (d *Database) Query(ctx context.Context, page item.Page) ([]item.Item, int,
 
 // Update replaces the stored item; it must exist.
 func (d *Database) Update(ctx context.Context, itm item.Item) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("updating item: %w", err)
+	if err := checkCtx(ctx, "updating item"); err != nil {
+		return err
 	}
 
 	d.mu.Lock()
@@ -106,8 +114,8 @@ func (d *Database) Update(ctx context.Context, itm item.Item) error {
 
 // Delete removes the stored item; it must exist.
 func (d *Database) Delete(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("deleting item: %w", err)
+	if err := checkCtx(ctx, "deleting item"); err != nil {
+		return err
 	}
 
 	d.mu.Lock()

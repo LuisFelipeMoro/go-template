@@ -1,0 +1,83 @@
+# golangci-lint configuration.
+#
+# Without this file golangci-lint runs only its small default set (errcheck,
+# govet, ineffassign, staticcheck, unused) — which silently leaves the rules
+# this repo actually states in CLAUDE.md unenforced: errors inspected with
+# errors.Is/As rather than string matching, no discarded errors, ctx propagated
+# everywhere, security-first defaults. Each linter below maps to one of those
+# rules, so the gate matches the documented standard instead of trailing it.
+#
+# Pin the binary to the same version CI uses (see .github/workflows/ci.yml and
+# the Makefile `tools` target) so local and CI verdicts never disagree.
+version: "2"
+
+linters:
+  enable:
+    # --- Security ------------------------------------------------------------
+    - gosec # OWASP-flavoured static analysis (weak crypto, injection, perms)
+    # --- Error handling (CLAUDE.md: wrap with %w, inspect with errors.Is/As) --
+    - errorlint # forbids err == target and type assertions on errors
+    - nilerr # returning nil after a non-nil error check
+    # --- Context propagation (CLAUDE.md: ctx is always first, always passed) --
+    - noctx # HTTP requests / SQL built without a context
+    # --- Resource correctness ------------------------------------------------
+    - bodyclose # HTTP response bodies must be closed
+    - sqlclosecheck # sql.Rows/Stmt must be closed (for when a real DB lands)
+    # --- Clarity / correctness -----------------------------------------------
+    - revive # golint successor: naming, exported comments, early returns
+    - gocritic # broad correctness + style diagnostics
+    - unconvert # redundant type conversions
+    - wastedassign # assignments never read
+    - predeclared # shadowing builtins (len, cap, new, ...)
+    - copyloopvar # stale Go <1.22 loop-variable copies
+    - usetesting # t.Setenv / t.Context over manual equivalents
+    - misspell # English spelling in comments and strings
+
+  settings:
+    revive:
+      rules:
+        - name: exported # exported identifiers carry a doc comment
+        - name: context-as-argument # ctx is the first parameter
+        - name: error-strings # error strings stay lowercase, unpunctuated
+        - name: error-return # error is the last return value
+        - name: indent-error-flow # prefer early return over else
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        # Fires on the deliberate `if cfg.Env == "dev" {...} else {...}` and
+        # similar two-branch config switches, which read fine as written.
+        - ifElseChain
+        # Config structs and domain entities are passed BY VALUE on purpose:
+        # an adapter receiving item.Item must not be able to mutate the
+        # caller's entity, and Config is immutable once loaded. Copying ~100-280
+        # bytes is the price of that guarantee, and it is not a hot path.
+        - hugeParam
+        # The interfaces these methods implement (cache.Cache, item.Storer)
+        # already name their results; repeating the names on every
+        # implementation adds noise without adding information.
+        - unnamedResult
+    gosec:
+      excludes:
+        # G104 duplicates errcheck, which is already enabled by default.
+        - G104
+
+  exclusions:
+    rules:
+      # Test files exercise error paths deliberately, discard response bodies
+      # they never read, and use fixed values — all of which trip these linters
+      # without indicating a defect in the code under test.
+      - path: _test\.go
+        linters:
+          - gosec
+          - revive
+          - noctx
+          - bodyclose
+          - nilerr
+          - gocritic
+
+formatters:
+  enable:
+    - gofmt

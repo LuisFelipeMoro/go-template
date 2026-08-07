@@ -80,9 +80,14 @@ func (s *CacheStore) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if err := s.cache.Delete(ctx, keyPrefix+id); err != nil {
-		s.log.ErrorContext(ctx, "cache evict failed", slog.String("error", err.Error()))
+		s.logFail(ctx, "cache evict failed", err)
 	}
 	return nil
+}
+
+// logFail logs a best-effort cache failure at error level (ADR-6).
+func (s *CacheStore) logFail(ctx context.Context, msg string, err error) {
+	s.log.ErrorContext(ctx, msg, slog.String("error", err.Error()))
 }
 
 // fromCache returns the cached item for id, or ok=false on a miss, a decode
@@ -90,7 +95,7 @@ func (s *CacheStore) Delete(ctx context.Context, id string) error {
 func (s *CacheStore) fromCache(ctx context.Context, id string) (item.Item, bool) {
 	data, ok, err := s.cache.Get(ctx, keyPrefix+id)
 	if err != nil {
-		s.log.ErrorContext(ctx, "cache read failed", slog.String("error", err.Error()))
+		s.logFail(ctx, "cache read failed", err)
 		return item.Item{}, false
 	}
 	if !ok {
@@ -98,7 +103,7 @@ func (s *CacheStore) fromCache(ctx context.Context, id string) (item.Item, bool)
 	}
 	var itm item.Item
 	if err := jsonv2.Unmarshal(data, &itm); err != nil {
-		s.log.ErrorContext(ctx, "cache decode failed", slog.String("error", err.Error()))
+		s.logFail(ctx, "cache decode failed", err)
 		return item.Item{}, false
 	}
 	return itm, true
@@ -108,10 +113,10 @@ func (s *CacheStore) fromCache(ctx context.Context, id string) (item.Item, bool)
 func (s *CacheStore) warm(ctx context.Context, itm item.Item) {
 	data, err := jsonv2.Marshal(itm)
 	if err != nil {
-		s.log.ErrorContext(ctx, "cache marshal failed", slog.String("error", err.Error()))
+		s.logFail(ctx, "cache marshal failed", err)
 		return
 	}
 	if err := s.cache.Set(ctx, keyPrefix+itm.ID, data, s.ttl); err != nil {
-		s.log.ErrorContext(ctx, "cache write failed", slog.String("error", err.Error()))
+		s.logFail(ctx, "cache write failed", err)
 	}
 }

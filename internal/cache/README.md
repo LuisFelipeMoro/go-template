@@ -25,7 +25,13 @@ concern (see `item/adapters/cache.go`'s use of `encoding/json/v2`).
   shared across replicas. `NewRedis` pings on construction so a bad address
   fails fast at startup. The command surface is isolated behind the
   internal `redisDoer` interface so the cache logic is unit-testable
-  without a live Redis server.
+  without a live Redis server. **Set `CACHE_REDIS_TLS=true` for any Redis
+  reached over a real network** (Elasticache/MemoryDB in-transit encryption,
+  Upstash, Redis Cloud): without it the AUTH password and every cached value
+  travel in plaintext. It is off by default only because the local
+  docker-compose Redis speaks plaintext. TLS uses hostname verification
+  derived from the address with a TLS 1.2 floor — there is no
+  `InsecureSkipVerify` escape hatch, so a MITM fails the dial.
 - `factory.go` — `New(ctx, cfg)` selects `NewNoop`/`NewMemory`/`NewRedis` by
   `cfg.Driver` (`none`|`memory`|`redis`, env var `CACHE_DRIVER`) and returns
   the `io.Closer` the composition root registers for shutdown.

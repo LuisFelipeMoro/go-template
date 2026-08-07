@@ -1,8 +1,12 @@
-// Package bus defines broker-agnostic messaging contracts plus an in-memory
-// implementation. Real brokers (SQS, SNS, Kafka) are integrated by
-// implementing Publisher and Consumer in a sibling package — no SDK types may
-// leak through these interfaces, so swapping brokers never touches domains,
-// adapters, or workers.
+// Package messaging defines broker-agnostic messaging contracts plus an
+// in-memory implementation. Real brokers (SQS, SNS, Kafka, RabbitMQ) are
+// integrated by implementing Publisher and Consumer here or in a sub-package —
+// no broker SDK type may appear in these interfaces, so swapping brokers never
+// touches domains, adapters, or workers.
+//
+// The template deliberately ships no real broker: the interfaces plus the
+// driver switch in New are the product. See the package README for the
+// three-step recipe to plug one in.
 package messaging
 
 import "context"

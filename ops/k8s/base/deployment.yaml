@@ -4,16 +4,45 @@ metadata:
   name: go-template
 spec:
   # replicas intentionally omitted — the HPA owns scaling.
+  revisionHistoryLimit: 5
+  # maxUnavailable: 0 keeps full capacity during a rollout; the new pod must pass
+  # its readiness probe before an old one is torn down.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  # The component label separates server pods from worker pods (see
+  # worker-deployment.yaml). Without it both Deployments would carry only
+  # `name: go-template`, and the Service would route HTTP traffic to worker
+  # pods that serve nothing. NOTE: spec.selector is immutable — changing it on
+  # an already-deployed Deployment requires deleting and recreating it.
   selector:
     matchLabels:
       app.kubernetes.io/name: go-template
+      app.kubernetes.io/component: server
   template:
     metadata:
       labels:
         app.kubernetes.io/name: go-template
+        app.kubernetes.io/component: server
     spec:
-      # Must exceed SHUTDOWN_TIMEOUT (20s) so the drain finishes before SIGKILL.
+      # Must exceed preStop sleep (5s) + SHUTDOWN_TIMEOUT (20s) so the drain
+      # finishes before SIGKILL.
       terminationGracePeriodSeconds: 30
+      # The app never calls the Kubernetes API — don't hand it a token.
+      automountServiceAccountToken: false
+      # Spread replicas across nodes so one node failure cannot take out the
+      # whole service. ScheduleAnyway (not DoNotSchedule) keeps single-node dev
+      # clusters schedulable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: go-template
+              app.kubernetes.io/component: server
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -25,10 +54,25 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # Endpoint removal is asynchronous: when SIGTERM arrives the app stops
+          # accepting immediately, but kube-proxy/ingress may still route to this
+          # pod for a beat — those connections would be refused. preStop delays
+          # SIGTERM so endpoint propagation wins the race. The native `sleep`
+          # action is used because the distroless image has no shell for `exec`.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          # Non-secret config from the generated ConfigMap; secrets (AUTH_API_KEYS,
+          # CACHE_REDIS_PASSWORD, DATABASE_URL) from a Secret — never the
+          # ConfigMap. optional: true keeps pods schedulable before the
+          # ExternalSecret has reconciled, and in envs that define no secrets.
           envFrom:
             - configMapRef:
                 name: go-template-config
-          # Secrets belong in a Secret + secretRef — never in the ConfigMap.
+            - secretRef:
+                name: go-template-secrets
+                optional: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -32,14 +32,18 @@ func Validate(s string) error {
 	if len(s) != 36 {
 		return fmt.Errorf("uid %q: must be 36 characters", s)
 	}
-	for i, r := range s {
+	// Iterate bytes, not runes. A canonical UUID is ASCII-only, and `range s`
+	// would decode multibyte runes whose truncated low byte can coincide with an
+	// ASCII hex digit (U+0430 CYRILLIC А truncates to '0'), letting a non-ASCII
+	// string pass as a valid id.
+	for i := range len(s) {
 		switch i {
 		case 8, 13, 18, 23:
-			if r != '-' {
+			if s[i] != '-' {
 				return fmt.Errorf("uid %q: expected '-' at position %d", s, i)
 			}
 		default:
-			if !isHex(byte(r)) {
+			if !isHex(s[i]) {
 				return fmt.Errorf("uid %q: non-hex character at position %d", s, i)
 			}
 		}

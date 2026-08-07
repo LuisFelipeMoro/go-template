@@ -21,6 +21,12 @@ type RedisConfig struct {
 	Addr     string // host:port
 	Password string // secret
 	DB       int    // logical database index
+	// TLS enables encryption in transit. Off by default because a local Redis
+	// in docker-compose speaks plaintext, but any managed Redis reached over a
+	// network (Elasticache/MemoryDB in-transit encryption, Upstash, Redis
+	// Cloud) must set it — otherwise the AUTH password and every cached value
+	// cross the network in the clear.
+	TLS bool
 }
 
 // noopCloser satisfies io.Closer for backends with nothing to release.

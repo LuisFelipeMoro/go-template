@@ -21,5 +21,4 @@ configMapGenerator:
       - MESSAGING_DRIVER=memory # switch to your real broker here (e.g. kafka)
 
 patches:
-  - path: deployment-patch.yaml
   - path: hpa-patch.yaml

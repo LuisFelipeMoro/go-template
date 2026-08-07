@@ -40,8 +40,6 @@ func TestLoad_EmptyEnvYieldsDefaults(t *testing.T) {
 	assert.Empty(t, cfg.Auth.APIKeys)
 	assert.False(t, cfg.Throttle.Enabled)
 	assert.Equal(t, 256, cfg.Throttle.MaxInFlight)
-	assert.Equal(t, 10*time.Second, cfg.HTTPClient.Timeout)
-	assert.Equal(t, 3, cfg.HTTPClient.MaxRetries)
 	assert.False(t, cfg.Otel.Enabled)
 	assert.Equal(t, "localhost:4317", cfg.Otel.Endpoint)
 	assert.Equal(t, "go-template", cfg.Otel.ServiceName)
@@ -69,8 +67,6 @@ func TestLoad_ValidOverrides(t *testing.T) {
 		"AUTH_API_KEYS":               " k1 , k2 ,, ",
 		"THROTTLE_ENABLED":            "true",
 		"THROTTLE_MAX_INFLIGHT":       "64",
-		"HTTP_CLIENT_TIMEOUT":         "3s",
-		"HTTP_CLIENT_MAX_RETRIES":     "5",
 		"OTEL_ENABLED":                "true",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4317",
 		"OTEL_SERVICE_NAME":           "my-svc",
@@ -97,8 +93,6 @@ func TestLoad_ValidOverrides(t *testing.T) {
 	assert.Equal(t, []string{"k1", "k2"}, cfg.Auth.APIKeys, "csv trimmed, blanks dropped")
 	assert.True(t, cfg.Throttle.Enabled)
 	assert.Equal(t, 64, cfg.Throttle.MaxInFlight)
-	assert.Equal(t, 3*time.Second, cfg.HTTPClient.Timeout)
-	assert.Equal(t, 5, cfg.HTTPClient.MaxRetries)
 	assert.True(t, cfg.Otel.Enabled)
 	assert.Equal(t, "collector:4317", cfg.Otel.Endpoint)
 	assert.Equal(t, "my-svc", cfg.Otel.ServiceName)
@@ -109,14 +103,62 @@ func TestLoad_WhitespaceTrimmed(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := load(mapGetter(map[string]string{
-		"APP_ENV":   "  prod  ",
-		"HTTP_PORT": " 9091 ",
-		"LOG_LEVEL": "\twarn\n",
+		"APP_ENV":      "  prod  ",
+		"HTTP_PORT":    " 9091 ",
+		"LOG_LEVEL":    "\twarn\n",
+		"AUTH_ENABLED": "true", // prod requires an explicit auth posture
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "prod", cfg.Env)
 	assert.Equal(t, 9091, cfg.HTTPPort)
 	assert.Equal(t, "warn", cfg.LogLevel)
+}
+
+// The prod auth guard is a fail-secure gate, so all three of its outcomes are
+// pinned: prod without auth refuses to start, prod with auth starts, and prod
+// with the explicit insecure opt-out starts (for gateway/mesh-enforced authn).
+func TestLoad_ProdAuthGuard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{
+			name:    "prod without auth refuses to start",
+			env:     map[string]string{"APP_ENV": "prod"},
+			wantErr: true,
+		},
+		{
+			name:    "prod with auth enabled starts",
+			env:     map[string]string{"APP_ENV": "prod", "AUTH_ENABLED": "true"},
+			wantErr: false,
+		},
+		{
+			name:    "prod with explicit insecure opt-out starts",
+			env:     map[string]string{"APP_ENV": "prod", "AUTH_ALLOW_INSECURE_NO_AUTH": "true"},
+			wantErr: false,
+		},
+		{
+			name:    "dev without auth starts",
+			env:     map[string]string{"APP_ENV": "dev"},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := load(mapGetter(tt.env))
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "AUTH_ENABLED", "error must name the fix")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 func TestLoad_RatioBoundsInclusive(t *testing.T) {
@@ -151,10 +193,8 @@ func TestLoad_InvalidValues(t *testing.T) {
 		{"max body zero", map[string]string{"MAX_BODY_BYTES": "0"}, "MAX_BODY_BYTES"},
 		{"max body negative", map[string]string{"MAX_BODY_BYTES": "-1"}, "MAX_BODY_BYTES"},
 		{"bad bool", map[string]string{"OTEL_ENABLED": "yes"}, "OTEL_ENABLED"},
-		{"retries zero", map[string]string{"HTTP_CLIENT_MAX_RETRIES": "0"}, "HTTP_CLIENT_MAX_RETRIES"},
-		{"retries too high", map[string]string{"HTTP_CLIENT_MAX_RETRIES": "11"}, "HTTP_CLIENT_MAX_RETRIES"},
-		{"bad client timeout", map[string]string{"HTTP_CLIENT_TIMEOUT": "nope"}, "HTTP_CLIENT_TIMEOUT"},
 		{"bad auth toggle", map[string]string{"AUTH_ENABLED": "yes"}, "AUTH_ENABLED"},
+		{"prod without auth is fail-secure", map[string]string{"APP_ENV": "prod"}, "AUTH_ENABLED"},
 		{"throttle zero", map[string]string{"THROTTLE_MAX_INFLIGHT": "0"}, "THROTTLE_MAX_INFLIGHT"},
 		{"bad cache ttl", map[string]string{"CACHE_TTL": "nope"}, "CACHE_TTL"},
 		{"redis db out of range", map[string]string{"CACHE_REDIS_DB": "16"}, "CACHE_REDIS_DB"},

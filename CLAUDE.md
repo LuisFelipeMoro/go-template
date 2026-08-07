@@ -38,7 +38,7 @@ import path instead (`internal/item` vs `internal/item/http` vs
 - **Domain owns its contracts**: `internal/item` defines `Storer` and `EventPublisher` in `ports.go`; `internal/item/adapters` (`Database`, `CacheStore`, `Publisher`) satisfies them. The domain imports no gin/http/broker; the HTTP adapter is `internal/item/http`.
 - **Infrastructure kernel** (`internal/web`, `internal/web/client`, `internal/cache`, `internal/messaging`, `internal/logger`, `internal/telemetry`, `internal/lifecycle`, `internal/worker`): template-specific, domain-agnostic; imports nothing above it.
 - **Generic libraries** (`pkg/uid`, `pkg/resilience`): zero dependencies on anything in this module — the only packages safe to import from outside it.
-- **Middleware** lives in `internal/middleware`; the composition root assembles the chain and passes it to `internal/web` via `WithGroupMiddleware`.
+- **Middleware** lives in `internal/middleware`; the composition root assembles the chain and passes it to `internal/web` via `WithGroupMiddleware`. Order is load-bearing and set in one place (`runServer`): `RequestID` → `SecurityHeaders` → `Telemetry` → `Recovery` → `Throttle` → `otelgin` → `Auth` → `Timeout` → `BodyLimit`. Telemetry sits high so it observes 401/429/503 and recovered 500s below it; `Timeout` sits after auth/throttle so rejected requests are not charged against the handler deadline, and before `BodyLimit` so the deadline also covers request decoding.
 - **API contract**: `api-spec.yaml` (OpenAPI 3.1) is the source of truth for HTTP. Change the spec first, lint it, then change code.
 
 ## Before Making Any Change
@@ -81,12 +81,14 @@ put it exactly there:
 
 ## Code Style (Ardan Labs + Uber Go + this repo's rules)
 
-- Errors: `fmt.Errorf("doing X: %w", err)` — never bare `return err`, never `_ =` discards; inspect with `errors.Is`/`errors.As`, never string matching.
+- Errors: `fmt.Errorf("doing X: %w", err)` — never bare `return err`; inspect with `errors.Is`/`errors.As`, never string matching.
+- **Never discard an error.** `_ =` and `_, _ =` are banned outright — there is no "unactionable cleanup" exception. Cleanup on a failing path joins its error instead of dropping it: `errors.Join(primaryErr, closeErr)` (Join skips nils, so the success path stays clean) — see `internal/cache/redis.go` and `internal/web/client/client.go`. For deferred closes, assign to a named return, as in `internal/cli/healthcheck.go`.
+- **No global variables.** The only package-level `var` allowed are sentinel errors (`var ErrNotFound = errors.New(...)` — Go has no error constants) and blank compile-time assertions (`var _ Iface = (*T)(nil)`); neither is mutable state. The sole exception is build metadata in `internal/cli/version.go`, because `-ldflags -X` can only write into a package-level var — it is write-once at link time and never mutated at runtime.
 - `ctx context.Context` is always the first parameter, named `ctx`; propagate it through every layer.
 - Constructor DI only: `func NewX(deps...) *X`. No globals, no `init()` logic, no service locators.
 - Interfaces live in the CONSUMER package; single-method interfaces end in `-er`; add `var _ Iface = (*Impl)(nil)` compile checks in implementations.
 - Table-driven tests with testify; every error path tested; `go test -race` must pass.
-- Concrete types or generics. `any` is allowed ONLY as a generic constraint (`Retry[T any]`, `bindJSON[T any]`) — never as a value/parameter type (`interface{}` says nothing). No reflection.
+- Concrete types or generics. `any` is allowed ONLY as a generic constraint (`Retry[T any]`, `web.BindJSON[T any]`) — never as a value/parameter type (`interface{}` says nothing). The lone exception is a signature a third-party library dictates, e.g. gin's recovery callback `func(c *gin.Context, err any)`. No reflection.
 - Package names: lowercase, single word. No `utils`/`helpers`/`common`.
 - **Logging (ADR-6, non-negotiable)**: production paths log at `error` level ONLY, always with `request_id`/`trace_id` and never PII/secrets/payloads. Every non-error signal (counts, durations, throughput) is an OTel metric via `internal/telemetry`. Do not add info/warn logs to request or message paths.
 - **JSON**: use `encoding/json/v2` (imported as `jsonv2`); on HTTP boundaries decode via `web.BindJSON` (`jsonv2.UnmarshalRead` + `RejectUnknownMembers`). No v1 `encoding/json`.
@@ -104,12 +106,17 @@ Switching or removing an adapter is a one-package + one-line change — never a 
 ### How to Detach a Part (remove cleanly, no dangling code)
 
 - **Messaging**: set `MESSAGING_DRIVER=none` (domain gets a no-op publisher, worker idles). To delete entirely: remove the `worker` command, `internal/worker`, `internal/item/adapters/events.go`, `internal/messaging`, and the messaging lines in `server.go`.
+- **Cache**: set `CACHE_DRIVER=none` (the composition root skips the decorator entirely — zero overhead). To delete entirely: remove `internal/cache`, `internal/item/adapters/cache.go`, the `CacheConfig` block in `internal/config`, and the cache lines + lifecycle component in `server.go`. The store is untouched — the cache only ever decorated it.
+- **Auth**: set `AUTH_ENABLED=false` (dev) or keep the guard satisfied with `AUTH_ALLOW_INSECURE_NO_AUTH=true`. To delete entirely: remove `internal/auth`, `internal/middleware/auth.go`, the `AuthConfig` block, and the auth lines in `server.go`.
+- **Outbound HTTP client**: nothing imports `internal/web/client` until you construct one, so deleting the package is a no-op for the rest of the tree.
 - **Worker**: delete `internal/worker` + `newWorkerCmd()` + `worker.go`. The server is independent.
 - **HTTP server**: delete `internal/web` + `internal/item/http` + `internal/middleware` + `newServerCmd()`; keep `worker` for a consumer-only service.
 
 ## Configuration
 
-All config is env-based with validated defaults — see `internal/config/config.go` for the full key table (`HTTP_PORT`, `SHUTDOWN_TIMEOUT`, `LOG_LEVEL`, `MESSAGING_DRIVER`, `CACHE_*`, `AUTH_*`, `THROTTLE_*`, `HTTP_CLIENT_*`, `OTEL_*`, …). `Load` uses the "errors are values" accumulator pattern (one parser, one error check) — add a field as one line in the struct literal. Fail-fast on invalid values.
+All config is env-based with validated defaults — see `internal/config/config.go` for the full key table (`HTTP_PORT`, `HTTP_*_TIMEOUT` including `HTTP_HANDLER_TIMEOUT`, `SHUTDOWN_TIMEOUT`, `LOG_LEVEL`, `MESSAGING_DRIVER`, `CACHE_*`, `AUTH_*`, `THROTTLE_*`, `OTEL_*`, …). `Load` uses the "errors are values" accumulator pattern (one parser, one error check) — add a field as one line in the struct literal. Fail-fast on invalid values. Cross-field rules (ones no single parser can see) go in `Config.validate`, which is where the prod auth guard lives: `APP_ENV=prod` with `AUTH_ENABLED=false` refuses to start unless `AUTH_ALLOW_INSECURE_NO_AUTH=true` is set deliberately.
+
+Never add a config key that nothing reads. Config parsed but never consumed misrepresents what the service does — add the key in the same change that adds its call site.
 
 Local dev: `cp .env.example .env` and edit. **Never commit `.env`/`.envrc`** — they're gitignored, and `make hooks` installs a pre-commit hook that blocks them (only `.env.example`, non-secret, is committable). Never read or write `.env` files from code; secrets come from the environment (K8s Secret via External Secrets Operator), never ConfigMaps or source.
 
@@ -117,7 +124,7 @@ Local dev: `cp .env.example .env` and edit. **Never commit `.env`/`.envrc`** —
 
 The app is 12-factor (config from env only), so config is managed declaratively in git, not imperatively:
 
-- **`ops/k8s/base/`** — environment-agnostic manifests.
+- **`ops/k8s/base/`** — environment-agnostic manifests: two Deployments from one image (`deployment.yaml` = `server`, `worker-deployment.yaml` = `worker`, split by an `app.kubernetes.io/component` label the Service/PDB selectors pin), plus `service.yaml`, `hpa.yaml`, and `pdb.yaml`.
 - **`ops/k8s/base`** uses a **`configMapGenerator`** (hashed name) so a committed config change rolls the Deployment automatically — no operator. Overlays override keys with `behavior: merge`.
 - **`ops/k8s/overlays/{dev,staging,prod}/`** patch env, image tag, namespace, scaling per environment. `make k8s-render ENV=prod` / `make k8s-apply ENV=prod`.
 - **Secrets** — `overlays/prod/external-secret.yaml`: only *references* live in git; External Secrets Operator materializes the Secret (swap for SOPS/sealed-secrets). Secret *rotation* auto-roll needs Stakater Reloader — see `ops/README.md`.
@@ -129,6 +136,11 @@ Change prod config = edit the `configMapGenerator` literals in `overlays/prod/ku
 ## Quality Gates (all must pass before any handoff)
 
 `gofmt` clean · `go vet` clean · `golangci-lint run` 0 errors · `go test -race ./...` green · coverage ≥85% (`make cover`) · `govulncheck` clean · `make spec-lint` 0 errors when touching HTTP. All `go` invocations need `GOEXPERIMENT=jsonv2` (Makefile/CI/Docker set it).
+
+Lint rules live in `.golangci.yml` — it enables the linters that enforce this
+file's stated rules (`gosec`, `errorlint`, `nilerr`, `noctx`, `bodyclose`,
+`revive`, `gocritic`, …), which the default linter set does NOT cover. Tool
+versions are pinned in the Makefile and must match `.github/workflows/ci.yml`.
 
 Run `make tools` once to install `golangci-lint` + `govulncheck` (not vendored). `go.mod` pins `toolchain go1.26.4` — the `go` command auto-downloads it. `encoding/json/v2` is behind `GOEXPERIMENT=jsonv2`; remove that flag once json/v2 graduates to the default.
 

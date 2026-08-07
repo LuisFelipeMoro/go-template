@@ -2,6 +2,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -17,6 +18,12 @@ import (
 // reaches the client; the caller logs the real error.
 func mapDomainError(c *gin.Context, err error) {
 	switch {
+	// Checked first: a blown handler deadline (middleware.Timeout) cancels the
+	// context, and every layer wraps that cause on its way back up. It is a
+	// transport condition, not a domain outcome, so it must not fall through to
+	// the generic 500 below.
+	case errors.Is(err, context.DeadlineExceeded):
+		web.Error(c, http.StatusGatewayTimeout, web.CodeTimeout, "request timed out")
 	case errors.Is(err, item.ErrInvalidArgument):
 		// Strip the trailing sentinel so the client sees the field detail
 		// ("name must be 1..120 chars") without the internal ": invalid argument".

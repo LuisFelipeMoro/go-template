@@ -16,8 +16,9 @@ import (
 const healthCheckTimeout = 2 * time.Second
 
 // newHealthcheckCmd probes the local HTTP server's /healthz endpoint and exits
-// non-zero on any non-200 response or connection failure. The server route is
-// delivered in Epic 2; the command is usable now for Docker HEALTHCHECK.
+// non-zero on any non-200 response or connection failure. The distroless image
+// ships no shell or curl, so the Dockerfile HEALTHCHECK runs this subcommand —
+// the binary probes itself.
 func newHealthcheckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "healthcheck",
@@ -48,7 +49,7 @@ func healthClient() *http.Client {
 
 // checkHealth performs a single GET and returns nil only on HTTP 200.
 func checkHealth(ctx context.Context, url string, client *http.Client) (err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("building healthcheck request: %w", err)
 	}

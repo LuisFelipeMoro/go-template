@@ -13,10 +13,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RouteRegistrar mounts a domain's routes onto the versioned API group. Each
+// RouteRegister mounts a domain's routes onto the versioned API group. Each
 // domain's HTTP adapter implements it, so the kernel serves any domain without
 // importing it — the seam that keeps this package domain-agnostic.
-type RouteRegistrar interface {
+type RouteRegister interface {
 	Register(rg *gin.RouterGroup)
 }
 
@@ -31,11 +31,11 @@ func WithGroupMiddleware(mw ...gin.HandlerFunc) Option {
 	return func(s *Server) { s.groupMiddleware = append(s.groupMiddleware, mw...) }
 }
 
-// WithRoutes registers one or more domain route registrars on the /v1 group.
-// The kernel applies the middleware chain, then each registrar mounts its
+// WithRoutes registers one or more domain route registers on the /v1 group.
+// The kernel applies the middleware chain, then each register mounts its
 // handlers — so the server serves any set of domains without importing them.
-func WithRoutes(regs ...RouteRegistrar) Option {
-	return func(s *Server) { s.registrars = append(s.registrars, regs...) }
+func WithRoutes(regs ...RouteRegister) Option {
+	return func(s *Server) { s.registers = append(s.registers, regs...) }
 }
 
 // Server owns the gin engine and its HTTP lifecycle.
@@ -43,7 +43,7 @@ type Server struct {
 	cfg             Config
 	log             *slog.Logger
 	ready           *Readiness
-	registrars      []RouteRegistrar
+	registers       []RouteRegister
 	groupMiddleware []gin.HandlerFunc
 	http            *http.Server
 }
@@ -88,12 +88,12 @@ func (s *Server) buildEngine() *gin.Engine {
 	engine.GET("/readyz", health.readyz)
 
 	// The /v1 group carries the middleware chain assembled by the composition
-	// root (order is the caller's responsibility); each registrar then mounts
+	// root (order is the caller's responsibility); each register then mounts
 	// its routes. Health routes above bypass the chain to keep probe traffic
 	// out of metrics and logs.
 	api := engine.Group("/v1")
 	api.Use(s.groupMiddleware...)
-	for _, r := range s.registrars {
+	for _, r := range s.registers {
 		r.Register(api)
 	}
 
@@ -112,7 +112,10 @@ func (s *Server) Handler() http.Handler {
 // the runner can shut the process down.
 func (s *Server) Start(ctx context.Context) error {
 	addr := net.JoinHostPort("", strconv.Itoa(s.cfg.Port))
-	ln, err := net.Listen("tcp", addr)
+	// ListenConfig (rather than net.Listen) so binding honours ctx cancellation
+	// — a shutdown signal during a slow bind aborts instead of hanging.
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}

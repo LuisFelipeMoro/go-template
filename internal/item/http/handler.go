@@ -1,6 +1,6 @@
 // Package http is the item domain's HTTP adapter: it maps requests to the
 // domain service and domain errors to responses, and registers its routes on
-// the kernel's /v1 group via web.RouteRegistrar. It imports the domain, never
+// the kernel's /v1 group via web.RouteRegister. It imports the domain, never
 // the reverse, so the domain package stays free of gin and HTTP terms.
 package http
 
@@ -18,7 +18,7 @@ type Handler struct {
 	svc *item.Service
 }
 
-var _ web.RouteRegistrar = (*Handler)(nil)
+var _ web.RouteRegister = (*Handler)(nil)
 
 // NewHandler constructs the item HTTP handler.
 func NewHandler(svc *item.Service) *Handler {

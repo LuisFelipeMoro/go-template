@@ -4,8 +4,12 @@ metadata:
   name: go-template
 spec:
   type: ClusterIP
+  # component: server is required — without it this Service would also select
+  # worker pods, which run no HTTP listener, and a share of every request would
+  # be routed to a pod that cannot answer it.
   selector:
     app.kubernetes.io/name: go-template
+    app.kubernetes.io/component: server
   ports:
     - name: http
       port: 80

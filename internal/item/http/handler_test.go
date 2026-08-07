@@ -1,6 +1,7 @@
 package http_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,6 +18,7 @@ import (
 	"github.com/luisfelipecoelho/go-template/internal/item/adapters"
 	itemhttp "github.com/luisfelipecoelho/go-template/internal/item/http"
 	"github.com/luisfelipecoelho/go-template/internal/messaging"
+	"github.com/luisfelipecoelho/go-template/internal/middleware"
 	"github.com/luisfelipecoelho/go-template/internal/web"
 )
 
@@ -26,11 +29,11 @@ func testServer(t *testing.T) *web.Server {
 	log := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	pub, _, closer, err := messaging.New("memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = closer.Close() })
+	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 	svc := item.NewService(log, adapters.NewDatabase(), adapters.NewPublisher(pub, "items"))
 	ready := web.NewReadiness()
 	ready.SetReady(true)
-	return web.NewServer(web.Config{MaxBodyBytes: 1 << 20, Env: "prod", Version: "test"}, log, ready, web.WithRoutes(itemhttp.NewHandler(svc)))
+	return web.NewServer(web.Config{Env: "prod", Version: "test"}, log, ready, web.WithRoutes(itemhttp.NewHandler(svc)))
 }
 
 func do(t *testing.T, s *web.Server, method, path, body string) *httptest.ResponseRecorder {
@@ -168,4 +171,47 @@ func TestDelete(t *testing.T) {
 
 	rec = do(t, s, http.MethodDelete, "/v1/items/"+created.ID, "")
 	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// blockingStore stalls until its context is cancelled, standing in for a
+// dependency that has stopped responding.
+type blockingStore struct{}
+
+func (blockingStore) Create(ctx context.Context, _ item.Item) error { <-ctx.Done(); return ctx.Err() }
+func (blockingStore) Update(ctx context.Context, _ item.Item) error { <-ctx.Done(); return ctx.Err() }
+func (blockingStore) Delete(ctx context.Context, _ string) error    { <-ctx.Done(); return ctx.Err() }
+
+func (blockingStore) QueryByID(ctx context.Context, _ string) (item.Item, error) {
+	<-ctx.Done()
+	return item.Item{}, ctx.Err()
+}
+
+func (blockingStore) Query(ctx context.Context, _ item.Page) ([]item.Item, int, error) {
+	<-ctx.Done()
+	return nil, 0, ctx.Err()
+}
+
+// A blown handler deadline must surface as 504 with the standard envelope, not
+// collapse into the generic 500 that every other internal failure maps to.
+func TestHandlerTimeout_MapsToGatewayTimeout(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	pub, _, closer, err := messaging.New("memory")
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
+
+	svc := item.NewService(log, blockingStore{}, adapters.NewPublisher(pub, "items"))
+	ready := web.NewReadiness()
+	ready.SetReady(true)
+	s := web.NewServer(web.Config{Env: "prod", Version: "test"}, log, ready,
+		web.WithGroupMiddleware(middleware.Timeout(20*time.Millisecond)),
+		web.WithRoutes(itemhttp.NewHandler(svc)))
+
+	rec := do(t, s, http.MethodGet, "/v1/items/a2b7172e-cca4-4fa6-89e2-5f65d45e850f", "")
+
+	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+	var env web.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+	assert.Equal(t, web.CodeTimeout, env.Error)
+	assert.NotContains(t, rec.Body.String(), "context deadline", "internal cause must not leak")
 }

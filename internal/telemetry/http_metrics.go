@@ -24,13 +24,9 @@ type HTTPMetrics struct {
 func NewHTTPMetrics(mp metric.MeterProvider) (*HTTPMetrics, error) {
 	meter := mp.Meter("github.com/luisfelipecoelho/go-template/http")
 
-	requests, err := meter.Int64Counter(
-		"http.server.requests",
-		metric.WithDescription("Count of HTTP requests handled."),
-		metric.WithUnit("{request}"),
-	)
+	requests, err := newInt64Counter(meter, "http.server.requests", "Count of HTTP requests handled.", "{request}")
 	if err != nil {
-		return nil, fmt.Errorf("creating http.server.requests counter: %w", err)
+		return nil, err
 	}
 
 	duration, err := meter.Float64Histogram(
@@ -43,6 +39,16 @@ func NewHTTPMetrics(mp metric.MeterProvider) (*HTTPMetrics, error) {
 	}
 
 	return &HTTPMetrics{requests: requests, duration: duration}, nil
+}
+
+// newInt64Counter constructs a named Int64Counter, wrapping the meter error
+// with the instrument name so a construction failure identifies its source.
+func newInt64Counter(meter metric.Meter, name, desc, unit string) (metric.Int64Counter, error) {
+	c, err := meter.Int64Counter(name, metric.WithDescription(desc), metric.WithUnit(unit))
+	if err != nil {
+		return nil, fmt.Errorf("creating %s counter: %w", name, err)
+	}
+	return c, nil
 }
 
 // RecordRequest records one handled request. Route (template) and status bound

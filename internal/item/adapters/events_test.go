@@ -29,17 +29,17 @@ func (c *capturePublisher) Publish(_ context.Context, msg messaging.Message) err
 
 func TestPublisher_PublishMarshalsAndKeys(t *testing.T) {
 	t.Parallel()
-	cap := &capturePublisher{}
-	p := NewPublisher(cap, "items")
+	captured := &capturePublisher{}
+	p := NewPublisher(captured, "items")
 
 	evt := item.Event{Type: item.EventCreated, ItemID: "abc"}
 	require.NoError(t, p.Publish(context.Background(), evt))
 
-	assert.Equal(t, "items", cap.last.Topic)
-	assert.Equal(t, "abc", cap.last.Key, "keyed by item id for partition affinity")
+	assert.Equal(t, "items", captured.last.Topic)
+	assert.Equal(t, "abc", captured.last.Key, "keyed by item id for partition affinity")
 
 	var got item.Event
-	require.NoError(t, jsonv2.Unmarshal(cap.last.Payload, &got))
+	require.NoError(t, jsonv2.Unmarshal(captured.last.Payload, &got))
 	assert.Equal(t, evt, got)
 }
 

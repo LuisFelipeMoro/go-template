@@ -80,6 +80,8 @@ paths:
           $ref: '#/components/responses/PayloadTooLarge'
         "500":
           $ref: '#/components/responses/InternalError'
+        "504":
+          $ref: '#/components/responses/GatewayTimeout'
     get:
       operationId: listItems
       summary: List items with pagination
@@ -116,6 +118,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "500":
           $ref: '#/components/responses/InternalError'
+        "504":
+          $ref: '#/components/responses/GatewayTimeout'
 
   /v1/items/{id}:
     parameters:
@@ -147,6 +151,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         "500":
           $ref: '#/components/responses/InternalError'
+        "504":
+          $ref: '#/components/responses/GatewayTimeout'
     patch:
       operationId: updateItem
       summary: Update an item (partial)
@@ -177,6 +183,8 @@ paths:
           $ref: '#/components/responses/PayloadTooLarge'
         "500":
           $ref: '#/components/responses/InternalError'
+        "504":
+          $ref: '#/components/responses/GatewayTimeout'
     delete:
       operationId: deleteItem
       summary: Delete an item
@@ -195,6 +203,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         "500":
           $ref: '#/components/responses/InternalError'
+        "504":
+          $ref: '#/components/responses/GatewayTimeout'
 
 components:
   schemas:
@@ -326,6 +336,15 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     InternalError:
       description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    GatewayTimeout:
+      description: >-
+        Handler exceeded HTTP_HANDLER_TIMEOUT. The request context was cancelled
+        and any in-flight downstream work abandoned; the operation may or may
+        not have been applied, so retries should be idempotent.
       content:
         application/json:
           schema:

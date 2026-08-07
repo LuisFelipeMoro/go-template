@@ -64,7 +64,9 @@ func runServer(ctx context.Context, cfg config.Config) error {
 	// alongside the database, so both run at once. "none" skips the decorator
 	// entirely (zero overhead).
 	var storer item.Storer = adapters.NewDatabase()
-	cacheCloser := io.Closer(io.NopCloser(nil))
+	// Stays a no-op unless a cache driver is configured, so the lifecycle
+	// component below can call Close unconditionally.
+	var cacheCloser io.Closer = noopCloser{}
 	if cfg.Cache.Driver != "" && cfg.Cache.Driver != "none" {
 		c, closer, cErr := cache.New(ctx, cache.Config{
 			Driver: cfg.Cache.Driver,
@@ -72,6 +74,7 @@ func runServer(ctx context.Context, cfg config.Config) error {
 				Addr:     cfg.Cache.RedisAddr,
 				Password: cfg.Cache.RedisPassword,
 				DB:       cfg.Cache.RedisDB,
+				TLS:      cfg.Cache.RedisTLS,
 			},
 		})
 		if cErr != nil {
@@ -113,7 +116,12 @@ func runServer(ctx context.Context, cfg config.Config) error {
 		}
 		chain = append(chain, middleware.Auth(authr))
 	}
-	chain = append(chain, middleware.BodyLimit(cfg.MaxBodyBytes))
+	// Timeout precedes bodyLimit so the deadline also covers request decoding,
+	// and follows auth/throttle so rejected requests are never charged against it.
+	chain = append(chain,
+		middleware.Timeout(cfg.HandlerTimeout),
+		middleware.BodyLimit(cfg.MaxBodyBytes),
+	)
 
 	// The kernel is domain-agnostic: each bounded context's HTTP adapter
 	// registers its own routes onto the /v1 group. Add a context = construct its
@@ -128,7 +136,6 @@ func runServer(ctx context.Context, cfg config.Config) error {
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
-		MaxBodyBytes: cfg.MaxBodyBytes,
 		Env:          cfg.Env,
 		Version:      version,
 	}, log, ready, opts...)

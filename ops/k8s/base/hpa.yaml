@@ -22,3 +22,11 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+  # Scale up fast (absorb a spike), scale down slowly. Without a scale-down
+  # stabilization window the HPA reacts to every CPU dip and thrashes replicas,
+  # which on a rolling pod churn costs more than the capacity it saves.
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      stabilizationWindowSeconds: 300

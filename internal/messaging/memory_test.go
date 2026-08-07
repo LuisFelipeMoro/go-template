@@ -15,7 +15,7 @@ import (
 func TestMemory_PublishDeliveredInOrder(t *testing.T) {
 	t.Parallel()
 	m := NewMemory()
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { assert.NoError(t, m.Close()) })
 
 	var mu sync.Mutex
 	var got []Message
@@ -25,12 +25,12 @@ func TestMemory_PublishDeliveredInOrder(t *testing.T) {
 	defer cancel()
 	go func() {
 		defer close(done)
-		_ = m.Consume(ctx, "items", func(ctx context.Context, msg Message) error {
+		assert.NoError(t, m.Consume(ctx, "items", func(ctx context.Context, msg Message) error {
 			mu.Lock()
 			got = append(got, msg)
 			mu.Unlock()
 			return nil
-		})
+		}))
 	}()
 
 	for i := 0; i < 3; i++ {
@@ -81,7 +81,7 @@ func TestMemory_CloseUnblocksConsumerAndRejectsPublish(t *testing.T) {
 func TestMemory_ConsumeReturnsNilOnCtxCancel(t *testing.T) {
 	t.Parallel()
 	m := NewMemory()
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { assert.NoError(t, m.Close()) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -101,7 +101,7 @@ func TestMemory_ConsumeReturnsNilOnCtxCancel(t *testing.T) {
 func TestMemory_FullBufferPublishErrors(t *testing.T) {
 	t.Parallel()
 	m := NewMemory()
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { assert.NoError(t, m.Close()) })
 
 	// No consumer: fill the topic buffer to capacity, next publish must fail loudly.
 	var err error
@@ -117,19 +117,19 @@ func TestMemory_FullBufferPublishErrors(t *testing.T) {
 func TestMemory_HandlerErrorDoesNotStopLoop(t *testing.T) {
 	t.Parallel()
 	m := NewMemory()
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { assert.NoError(t, m.Close()) })
 
 	var mu sync.Mutex
 	var seen int
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		_ = m.Consume(ctx, "items", func(ctx context.Context, msg Message) error {
+		assert.NoError(t, m.Consume(ctx, "items", func(ctx context.Context, msg Message) error {
 			mu.Lock()
 			seen++
 			mu.Unlock()
 			return fmt.Errorf("handler failure")
-		})
+		}))
 	}()
 
 	require.NoError(t, m.Publish(context.Background(), Message{Topic: "items"}))
@@ -145,19 +145,19 @@ func TestMemory_HandlerErrorDoesNotStopLoop(t *testing.T) {
 func TestMemory_ConcurrentPublishersRaceClean(t *testing.T) {
 	t.Parallel()
 	m := NewMemory()
-	t.Cleanup(func() { _ = m.Close() })
+	t.Cleanup(func() { assert.NoError(t, m.Close()) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var mu sync.Mutex
 	count := 0
 	go func() {
-		_ = m.Consume(ctx, "items", func(context.Context, Message) error {
+		assert.NoError(t, m.Consume(ctx, "items", func(context.Context, Message) error {
 			mu.Lock()
 			count++
 			mu.Unlock()
 			return nil
-		})
+		}))
 	}()
 
 	var wg sync.WaitGroup
@@ -166,7 +166,7 @@ func TestMemory_ConcurrentPublishersRaceClean(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
-				_ = m.Publish(context.Background(), Message{Topic: "items"})
+				assert.NoError(t, m.Publish(context.Background(), Message{Topic: "items"}))
 			}
 		}()
 	}
