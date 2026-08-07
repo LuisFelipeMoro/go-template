@@ -8,6 +8,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,10 +92,18 @@ func (c *Client) once(ctx context.Context, req *http.Request, retryable bool) (*
 		}
 		resp = r
 		if retryable && isRetryableStatus(r.StatusCode) {
-			// Drain and close so the connection can be reused before retrying.
-			_, _ = io.Copy(io.Discard, r.Body)
-			_ = r.Body.Close()
-			return fmt.Errorf("retryable upstream status %d", r.StatusCode)
+			// Drain and close so the connection returns to the pool before we
+			// retry. Both outcomes are joined onto the status error rather than
+			// dropped: errors.Join skips nils, so the common (clean) path still
+			// yields just the status error, while a drain or close failure —
+			// which signals a broken connection worth seeing — survives.
+			_, drainErr := io.Copy(io.Discard, r.Body)
+			closeErr := r.Body.Close()
+			return errors.Join(
+				fmt.Errorf("retryable upstream status %d", r.StatusCode),
+				drainErr,
+				closeErr,
+			)
 		}
 		return nil
 	})

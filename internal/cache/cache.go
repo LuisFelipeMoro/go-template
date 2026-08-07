@@ -21,6 +21,14 @@ type Cache interface {
 	Delete(ctx context.Context, key string) error
 }
 
+// Compile-time proof that every built-in backend satisfies Cache, so adding a
+// method to the interface breaks here rather than at a distant call site.
+var (
+	_ Cache = noop{}
+	_ Cache = (*Memory)(nil)
+	_ Cache = (*RedisCache)(nil)
+)
+
 // noop is the zero-overhead Cache used when caching is disabled: every read
 // misses and every write is dropped, so a decorated store behaves exactly like
 // an undecorated one.

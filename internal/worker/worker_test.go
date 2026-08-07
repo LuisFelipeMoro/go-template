@@ -17,8 +17,11 @@ import (
 )
 
 // fakeConsumer feeds a fixed set of messages then blocks until ctx is done.
+// handlerErrs captures anything the handler returned; Worker.process is
+// contractually required to leave it empty.
 type fakeConsumer struct {
-	msgs []messaging.Message
+	msgs        []messaging.Message
+	handlerErrs []error
 }
 
 func (f *fakeConsumer) Consume(ctx context.Context, topic string, h messaging.Handler) error {
@@ -26,7 +29,12 @@ func (f *fakeConsumer) Consume(ctx context.Context, topic string, h messaging.Ha
 		if ctx.Err() != nil {
 			return nil
 		}
-		_ = h(ctx, m)
+		// Worker.process absorbs handler failures by design (it records them as
+		// metrics and keeps the loop alive), so it must never hand one back to
+		// the consumer. Asserting that here is what pins the contract.
+		if err := h(ctx, m); err != nil {
+			f.handlerErrs = append(f.handlerErrs, err)
+		}
 	}
 	<-ctx.Done()
 	return nil

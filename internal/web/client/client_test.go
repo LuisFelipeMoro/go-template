@@ -43,7 +43,8 @@ func TestDo_SuccessNoRetry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok")
+		_, werr := io.WriteString(w, "ok")
+		assert.NoError(t, werr)
 	}))
 	defer srv.Close()
 

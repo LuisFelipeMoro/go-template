@@ -11,6 +11,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -31,6 +32,7 @@ type Config struct {
 	ReadTimeout     time.Duration // HTTP_READ_TIMEOUT (default 5s)
 	WriteTimeout    time.Duration // HTTP_WRITE_TIMEOUT (default 10s)
 	IdleTimeout     time.Duration // HTTP_IDLE_TIMEOUT (default 60s)
+	HandlerTimeout  time.Duration // HTTP_HANDLER_TIMEOUT (default 8s; keep below HTTP_WRITE_TIMEOUT)
 	ShutdownTimeout time.Duration // SHUTDOWN_TIMEOUT (default 20s)
 	LogLevel        string        // LOG_LEVEL: debug|info|warn|error (default error — errors-only logging policy; non-error signals are metrics)
 	MaxBodyBytes    int64         // MAX_BODY_BYTES (default 1048576, >0)
@@ -38,7 +40,6 @@ type Config struct {
 	Messaging       MessagingConfig
 	Auth            AuthConfig
 	Throttle        ThrottleConfig
-	HTTPClient      HTTPClientConfig
 	Otel            OtelConfig
 }
 
@@ -52,6 +53,7 @@ type CacheConfig struct {
 	RedisAddr     string        // CACHE_REDIS_ADDR (default localhost:6379)
 	RedisPassword string        // CACHE_REDIS_PASSWORD (secret)
 	RedisDB       int           // CACHE_REDIS_DB (default 0, 0..15)
+	RedisTLS      bool          // CACHE_REDIS_TLS (default false; REQUIRED for any managed/remote Redis)
 }
 
 // AuthConfig toggles bearer-token authentication on the /v1 group. When Enabled
@@ -61,6 +63,13 @@ type CacheConfig struct {
 type AuthConfig struct {
 	Enabled bool     // AUTH_ENABLED (default false)
 	APIKeys []string // AUTH_API_KEYS: comma-separated bearer keys (secret)
+	// AllowInsecureNoAuth (AUTH_ALLOW_INSECURE_NO_AUTH) is the deliberate
+	// opt-out from the prod auth guard in Load. It exists for services whose
+	// authentication genuinely lives in front of them (an API gateway, a
+	// service mesh with mTLS). Naming it "INSECURE" is the point: disabling
+	// authentication in production must be a typed, reviewable decision in
+	// git, never a default someone inherited without noticing.
+	AllowInsecureNoAuth bool
 }
 
 // ThrottleConfig toggles the per-instance concurrency throttle on the /v1
@@ -76,12 +85,6 @@ type ThrottleConfig struct {
 // entirely (the domain receives a no-op publisher and no consumer runs).
 type MessagingConfig struct {
 	Driver string // MESSAGING_DRIVER: memory (default) | none. Extend the factory to add kafka, sqs, nats, ...
-}
-
-// HTTPClientConfig tunes the resilient outbound client in internal/web/client.
-type HTTPClientConfig struct {
-	Timeout    time.Duration // HTTP_CLIENT_TIMEOUT (default 10s)
-	MaxRetries int           // HTTP_CLIENT_MAX_RETRIES (default 3, >=1 total attempts)
 }
 
 // OtelConfig groups OpenTelemetry-related settings.
@@ -117,6 +120,7 @@ func load(get func(string) string) (Config, error) {
 		ReadTimeout:     p.duration("HTTP_READ_TIMEOUT", 5*time.Second),
 		WriteTimeout:    p.duration("HTTP_WRITE_TIMEOUT", 10*time.Second),
 		IdleTimeout:     p.duration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		HandlerTimeout:  p.duration("HTTP_HANDLER_TIMEOUT", 8*time.Second),
 		ShutdownTimeout: p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
 		LogLevel:        p.enum("LOG_LEVEL", "error", "debug", "info", "warn", "error"),
 		MaxBodyBytes:    p.int64Min("MAX_BODY_BYTES", 1048576, 1),
@@ -128,19 +132,17 @@ func load(get func(string) string) (Config, error) {
 			RedisAddr:     p.str("CACHE_REDIS_ADDR", "localhost:6379"),
 			RedisPassword: p.str("CACHE_REDIS_PASSWORD", ""),
 			RedisDB:       p.intRange("CACHE_REDIS_DB", 0, 0, 15),
+			RedisTLS:      p.boolean("CACHE_REDIS_TLS", false),
 		},
 		Messaging: MessagingConfig{Driver: p.str("MESSAGING_DRIVER", "memory")},
 		Auth: AuthConfig{
-			Enabled: p.boolean("AUTH_ENABLED", false),
-			APIKeys: p.csv("AUTH_API_KEYS"),
+			Enabled:             p.boolean("AUTH_ENABLED", false),
+			APIKeys:             p.csv("AUTH_API_KEYS"),
+			AllowInsecureNoAuth: p.boolean("AUTH_ALLOW_INSECURE_NO_AUTH", false),
 		},
 		Throttle: ThrottleConfig{
 			Enabled:     p.boolean("THROTTLE_ENABLED", false),
 			MaxInFlight: p.intRange("THROTTLE_MAX_INFLIGHT", 256, 1, 1_000_000),
-		},
-		HTTPClient: HTTPClientConfig{
-			Timeout:    p.duration("HTTP_CLIENT_TIMEOUT", 10*time.Second),
-			MaxRetries: p.intRange("HTTP_CLIENT_MAX_RETRIES", 3, 1, 10),
 		},
 		Otel: OtelConfig{
 			Enabled:     p.boolean("OTEL_ENABLED", false),
@@ -153,7 +155,27 @@ func load(get func(string) string) (Config, error) {
 	if p.err != nil {
 		return Config{}, p.err
 	}
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// validate enforces the cross-field rules that no single parser can see,
+// because they depend on the combination of two values rather than either one.
+func (c Config) validate() error {
+	// Fail secure: authentication defaults to off so the template runs locally
+	// with no setup, but that default silently becoming a production posture is
+	// the classic fail-open deployment. Refuse to start rather than serve an
+	// unauthenticated API, unless the operator has explicitly declared that
+	// something in front handles authn.
+	if c.Env == "prod" && !c.Auth.Enabled && !c.Auth.AllowInsecureNoAuth {
+		return errors.New(
+			"config: APP_ENV=prod with AUTH_ENABLED=false would serve an unauthenticated API; " +
+				"set AUTH_ENABLED=true and provide AUTH_API_KEYS, or set " +
+				"AUTH_ALLOW_INSECURE_NO_AUTH=true if authentication is enforced by a gateway or service mesh")
+	}
+	return nil
 }
 
 // parser reads and validates environment values, holding the first error so the
@@ -171,82 +193,19 @@ func (p *parser) fail(err error) {
 	}
 }
 
+// str returns the trimmed value of key, or def when unset/blank.
 func (p *parser) str(key, def string) string {
-	return strVal(p.get, key, def)
-}
-
-// csv reads a comma-separated list, trimming blanks. It never fails (an empty
-// or unset value yields nil), so it needs no error accumulation.
-func (p *parser) csv(key string) []string {
-	return csvVal(p.get, key)
-}
-
-func (p *parser) enum(key, def string, allowed ...string) string {
-	if p.err != nil {
-		return def
-	}
-	v, err := enumVal(p.get, key, def, allowed...)
-	p.fail(err)
-	return v
-}
-
-func (p *parser) intRange(key string, def, min, max int) int {
-	if p.err != nil {
-		return def
-	}
-	v, err := intVal(p.get, key, def, min, max)
-	p.fail(err)
-	return v
-}
-
-func (p *parser) int64Min(key string, def, min int64) int64 {
-	if p.err != nil {
-		return def
-	}
-	v, err := int64Val(p.get, key, def, min)
-	p.fail(err)
-	return v
-}
-
-func (p *parser) duration(key string, def time.Duration) time.Duration {
-	if p.err != nil {
-		return def
-	}
-	v, err := durVal(p.get, key, def)
-	p.fail(err)
-	return v
-}
-
-func (p *parser) boolean(key string, def bool) bool {
-	if p.err != nil {
-		return def
-	}
-	v, err := boolVal(p.get, key, def)
-	p.fail(err)
-	return v
-}
-
-func (p *parser) ratio(key string, def float64) float64 {
-	if p.err != nil {
-		return def
-	}
-	v, err := ratioVal(p.get, key, def)
-	p.fail(err)
-	return v
-}
-
-// strVal returns the trimmed value of key, or def when unset/blank.
-func strVal(get func(string) string, key, def string) string {
-	if v := strings.TrimSpace(get(key)); v != "" {
+	if v := strings.TrimSpace(p.get(key)); v != "" {
 		return v
 	}
 	return def
 }
 
-// csvVal reads a comma-separated list, trimming each element and dropping
-// blanks. Unset or all-blank yields nil.
-func csvVal(get func(string) string, key string) []string {
-	raw := strings.TrimSpace(get(key))
+// csv reads a comma-separated list, trimming each element and dropping
+// blanks. Unset or all-blank yields nil. It never fails, so it needs no error
+// accumulation.
+func (p *parser) csv(key string) []string {
+	raw := strings.TrimSpace(p.get(key))
 	if raw == "" {
 		return nil
 	}
@@ -260,90 +219,118 @@ func csvVal(get func(string) string, key string) []string {
 	return out
 }
 
-// enumVal reads a trimmed string restricted to the allowed set.
-func enumVal(get func(string) string, key, def string, allowed ...string) (string, error) {
-	v := strVal(get, key, def)
+// enum reads a trimmed string restricted to the allowed set.
+func (p *parser) enum(key, def string, allowed ...string) string {
+	if p.err != nil {
+		return def
+	}
+	v := p.str(key, def)
 	for _, a := range allowed {
 		if v == a {
-			return v, nil
+			return v
 		}
 	}
-	return "", fmt.Errorf("config %s: %q is not one of %s", key, v, strings.Join(allowed, "|"))
+	p.fail(fmt.Errorf("config %s: %q is not one of %s", key, v, strings.Join(allowed, "|")))
+	return def
 }
 
-// intVal reads an int within [min, max] inclusive.
-func intVal(get func(string) string, key string, def, min, max int) (int, error) {
-	raw := strings.TrimSpace(get(key))
+// intRange reads an int within [lo, hi] inclusive.
+func (p *parser) intRange(key string, def, lo, hi int) int {
+	if p.err != nil {
+		return def
+	}
+	raw := strings.TrimSpace(p.get(key))
 	if raw == "" {
-		return def, nil
+		return def
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, fmt.Errorf("config %s: not a valid integer: %w", key, err)
+		p.fail(fmt.Errorf("config %s: not a valid integer: %w", key, err))
+		return def
 	}
-	if n < min || n > max {
-		return 0, fmt.Errorf("config %s: %d out of range [%d, %d]", key, n, min, max)
+	if n < lo || n > hi {
+		p.fail(fmt.Errorf("config %s: %d out of range [%d, %d]", key, n, lo, hi))
+		return def
 	}
-	return n, nil
+	return n
 }
 
-// int64Val reads an int64 that must be >= min.
-func int64Val(get func(string) string, key string, def, min int64) (int64, error) {
-	raw := strings.TrimSpace(get(key))
+// int64Min reads an int64 that must be >= lo.
+func (p *parser) int64Min(key string, def, lo int64) int64 {
+	if p.err != nil {
+		return def
+	}
+	raw := strings.TrimSpace(p.get(key))
 	if raw == "" {
-		return def, nil
+		return def
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("config %s: not a valid integer: %w", key, err)
+		p.fail(fmt.Errorf("config %s: not a valid integer: %w", key, err))
+		return def
 	}
-	if n < min {
-		return 0, fmt.Errorf("config %s: %d must be >= %d", key, n, min)
+	if n < lo {
+		p.fail(fmt.Errorf("config %s: %d must be >= %d", key, n, lo))
+		return def
 	}
-	return n, nil
+	return n
 }
 
-// durVal reads a non-negative duration via time.ParseDuration.
-func durVal(get func(string) string, key string, def time.Duration) (time.Duration, error) {
-	raw := strings.TrimSpace(get(key))
+// duration reads a non-negative duration via time.ParseDuration.
+func (p *parser) duration(key string, def time.Duration) time.Duration {
+	if p.err != nil {
+		return def
+	}
+	raw := strings.TrimSpace(p.get(key))
 	if raw == "" {
-		return def, nil
+		return def
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		return 0, fmt.Errorf("config %s: not a valid duration: %w", key, err)
+		p.fail(fmt.Errorf("config %s: not a valid duration: %w", key, err))
+		return def
 	}
 	if d < 0 {
-		return 0, fmt.Errorf("config %s: %s must not be negative", key, d)
+		p.fail(fmt.Errorf("config %s: %s must not be negative", key, d))
+		return def
 	}
-	return d, nil
+	return d
 }
 
-// boolVal reads a bool via strconv.ParseBool.
-func boolVal(get func(string) string, key string, def bool) (bool, error) {
-	raw := strings.TrimSpace(get(key))
+// boolean reads a bool via strconv.ParseBool.
+func (p *parser) boolean(key string, def bool) bool {
+	if p.err != nil {
+		return def
+	}
+	raw := strings.TrimSpace(p.get(key))
 	if raw == "" {
-		return def, nil
+		return def
 	}
 	b, err := strconv.ParseBool(raw)
 	if err != nil {
-		return false, fmt.Errorf("config %s: not a valid boolean: %w", key, err)
+		p.fail(fmt.Errorf("config %s: not a valid boolean: %w", key, err))
+		return def
 	}
-	return b, nil
+	return b
 }
 
-// ratioVal reads a float in [0, 1] inclusive.
-func ratioVal(get func(string) string, key string, def float64) (float64, error) {
-	raw := strings.TrimSpace(get(key))
+// ratio reads a float in [0, 1] inclusive.
+func (p *parser) ratio(key string, def float64) float64 {
+	if p.err != nil {
+		return def
+	}
+	raw := strings.TrimSpace(p.get(key))
 	if raw == "" {
-		return def, nil
+		return def
 	}
 	f, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, fmt.Errorf("config %s: not a valid number: %w", key, err)
+		p.fail(fmt.Errorf("config %s: not a valid number: %w", key, err))
+		return def
 	}
 	if f < 0 || f > 1 {
-		return 0, fmt.Errorf("config %s: %v out of range [0, 1]", key, f)
+		p.fail(fmt.Errorf("config %s: %v out of range [0, 1]", key, f))
+		return def
 	}
-	return f, nil
+	return f
 }

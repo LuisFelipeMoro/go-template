@@ -37,7 +37,8 @@ func TestMemory_SetGetDelete(t *testing.T) {
 	assert.Equal(t, []byte("hello"), v)
 
 	require.NoError(t, c.Delete(ctx, "k"))
-	_, ok, _ = c.Get(ctx, "k")
+	_, ok, err = c.Get(ctx, "k")
+	require.NoError(t, err)
 	assert.False(t, ok, "deleted key misses")
 }
 
@@ -50,11 +51,13 @@ func TestMemory_Expiry(t *testing.T) {
 
 	require.NoError(t, c.Set(ctx, "k", []byte("v"), time.Minute))
 	now = now.Add(30 * time.Second)
-	_, ok, _ := c.Get(ctx, "k")
+	_, ok, err := c.Get(ctx, "k")
+	require.NoError(t, err)
 	assert.True(t, ok, "unexpired entry is a hit")
 
 	now = now.Add(31 * time.Second) // past the 60s TTL
-	_, ok, _ = c.Get(ctx, "k")
+	_, ok, err = c.Get(ctx, "k")
+	require.NoError(t, err)
 	assert.False(t, ok, "expired entry is a miss")
 }
 
@@ -114,7 +117,8 @@ func TestRedisCache_RoundTrip(t *testing.T) {
 	assert.Equal(t, []byte("v"), v)
 
 	require.NoError(t, r.Delete(ctx, "k"))
-	_, ok, _ = r.Get(ctx, "k")
+	_, ok, err = r.Get(ctx, "k")
+	require.NoError(t, err)
 	assert.False(t, ok)
 }
 

@@ -3,8 +3,10 @@ kind: Kustomization
 
 resources:
   - deployment.yaml
+  - worker-deployment.yaml
   - service.yaml
   - hpa.yaml
+  - pdb.yaml
 
 labels:
   - includeSelectors: true
@@ -28,6 +30,12 @@ configMapGenerator:
       - LOG_LEVEL=error # errors-only logging policy (ADR-6); non-error signals are metrics
       - SHUTDOWN_TIMEOUT=20s
       - MESSAGING_DRIVER=memory
+      # APP_ENV=prod above makes config.Load refuse to start with auth off, so
+      # this must be an explicit decision rather than an inherited default. The
+      # keys themselves come from the Secret (see the overlay's ExternalSecret);
+      # a pod with AUTH_ENABLED=true and no AUTH_API_KEYS fails fast at startup
+      # instead of serving an open API. The dev overlay turns this off.
+      - AUTH_ENABLED=true
       - OTEL_ENABLED=true
       - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector.observability.svc.cluster.local:4317
       - OTEL_SERVICE_NAME=go-template

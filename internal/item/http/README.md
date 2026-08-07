@@ -2,7 +2,7 @@
 
 The item domain's HTTP adapter. Maps HTTP requests to `item.Service` calls
 and domain errors to HTTP responses; registers its routes on the kernel's
-`/v1` group via `internal/web.RouteRegistrar`. Imported package name is
+`/v1` group via `internal/web.RouteRegister`. Imported package name is
 `http`, so callers alias it (`itemhttp "github.com/.../internal/item/http"`)
 wherever `net/http` is also imported in the same file.
 
@@ -12,7 +12,7 @@ domain (`internal/item/item.go`), not here.
 
 ## What's here
 
-- `handler.go` — `Handler`, implementing `web.RouteRegistrar`. One method
+- `handler.go` — `Handler`, implementing `web.RouteRegister`. One method
   per operation (`create`/`list`/`get`/`update`/`delete`), each decoding the
   request, calling the service, and rendering the response.
 - `model.go` — the wire DTOs (`createItemRequest`, `updateItemRequest`,
@@ -24,7 +24,12 @@ domain (`internal/item/item.go`), not here.
 - `errors.go` — `mapDomainError`: the single place that turns
   `item.ErrInvalidArgument`/`item.ErrNotFound`/anything else into the
   correct `web.Error` status + code. Internal failures collapse to a generic
-  500 so implementation detail never reaches the client.
+  500 so implementation detail never reaches the client. It also checks
+  `context.DeadlineExceeded` **first** and maps it to **504**: a blown
+  handler deadline (`middleware.Timeout`) is a transport condition, not a
+  domain outcome, and every layer wraps that cause on the way back up — so
+  without an explicit case it would silently fall through to the generic
+  500. Any new domain copying this package must keep that case.
 
 ## When to extend
 

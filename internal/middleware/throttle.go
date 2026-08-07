@@ -9,12 +9,14 @@ import (
 	"github.com/luisfelipecoelho/go-template/internal/web"
 )
 
-// Throttle bounds the number of requests processed concurrently. It is
-// backpressure, not a rate limit: a request-per-second quota belongs at the
-// border (gateway/ingress), enforced globally across replicas. This only
-// protects a single instance from resource exhaustion under a spike by shedding
-// excess load fast. Semaphore is the built-in Limiter; any concurrency limiter
-// can be injected.
+// Limiter bounds how many requests are processed concurrently. It is owned here
+// (the consumer) so any concurrency limiter can be injected; Semaphore below is
+// the built-in implementation.
+//
+// This is backpressure, not a rate limit: a request-per-second quota belongs at
+// the border (gateway/ingress), enforced globally across replicas. A Limiter
+// only protects a single instance from resource exhaustion under a spike, by
+// shedding excess load fast.
 type Limiter interface {
 	// Acquire reserves a slot, returning false when none is free (shed the
 	// request). A true result must be paired with exactly one Release.
@@ -44,6 +46,8 @@ func Throttle(l Limiter) gin.HandlerFunc {
 type Semaphore struct {
 	slots chan struct{}
 }
+
+var _ Limiter = (*Semaphore)(nil)
 
 // NewSemaphore builds a Semaphore permitting maxInFlight concurrent holders.
 func NewSemaphore(maxInFlight int) *Semaphore {

@@ -6,12 +6,15 @@ package web
 import "time"
 
 // Config holds the HTTP server's tunables, sourced from internal/config.
+//
+// Body size is deliberately absent: it is enforced by middleware.BodyLimit,
+// which the composition root puts in the chain. Carrying a MaxBodyBytes field
+// here that nothing in this package reads would imply the server enforces it.
 type Config struct {
 	Port         int
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
-	MaxBodyBytes int64
 	Env          string // "dev" enables gin debug mode; anything else is release
 	Version      string
 }

@@ -111,9 +111,10 @@ func TestRetry_JitterWithinBounds(t *testing.T) {
 		delays = append(delays, d)
 		return nil
 	}
-	_, _ = Retry(context.Background(), cfg, func(ctx context.Context) (int, error) {
+	_, err := Retry(context.Background(), cfg, func(ctx context.Context) (int, error) {
 		return 0, errors.New("x")
 	})
+	require.Error(t, err, "every attempt fails, so Retry must report exhaustion")
 	// base for attempt 1 is 100ms; jitter 0.5 → within [50ms, 150ms].
 	require.NotEmpty(t, delays)
 	assert.GreaterOrEqual(t, delays[0], 50*time.Millisecond)

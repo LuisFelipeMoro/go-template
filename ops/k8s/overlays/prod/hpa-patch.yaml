@@ -3,8 +3,14 @@ kind: HorizontalPodAutoscaler
 metadata:
   name: go-template
 spec:
-  # Only safe once Storer is backed by a real shared database — see the
-  # comment in ops/k8s/base/hpa.yaml. Do not raise this while adapters.Database
-  # (the in-memory reference store) is still wired in the composition root.
-  minReplicas: 3
+  # minReplicas stays 1 until Storer is backed by a real shared database — see
+  # the comment in ops/k8s/base/hpa.yaml. The reference store
+  # (adapters.Database) is an in-memory map per pod, so a second replica splits
+  # data silently: an item created on one pod 404s on another, with nothing in
+  # the logs to say why.
+  #
+  # This is THE line to change when you swap in Postgres. Raising it to 3 while
+  # the in-memory store is wired is a correctness bug, not a capacity decision —
+  # maxReplicas is already 20, so the HPA can still absorb load above the floor.
+  minReplicas: 1
   maxReplicas: 20

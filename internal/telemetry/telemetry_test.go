@@ -35,7 +35,7 @@ func TestInit_DisabledReturnsNoopProviders(t *testing.T) {
 func TestHTTPMetrics_RecordsWithBoundedAttrs(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	t.Cleanup(func() { assert.NoError(t, mp.Shutdown(context.Background())) })
 
 	m, err := NewHTTPMetrics(mp)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestHTTPMetrics_RecordsWithBoundedAttrs(t *testing.T) {
 func TestWorkerMetrics_Records(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	t.Cleanup(func() { assert.NoError(t, mp.Shutdown(context.Background())) })
 
 	m, err := NewWorkerMetrics(mp)
 	require.NoError(t, err)

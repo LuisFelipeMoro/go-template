@@ -44,13 +44,22 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
-// SecurityHeaders sets conservative response headers on every request.
+// SecurityHeaders sets conservative response headers on every request. The
+// values suit a JSON API: nothing here is meant to be rendered, framed, or
+// cached, so each header denies rather than configures. HSTS is deliberately
+// absent — TLS terminates at the ingress, which owns that header.
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.Writer.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Cache-Control", "no-store")
+		// An API serves no scripts, styles, images, or frames. Locking the
+		// policy to 'none' means a response that somehow renders as HTML (a
+		// proxy error page, a future non-JSON route) still executes nothing.
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		// Never leak the request URL — it can carry ids — to a third-party host.
+		h.Set("Referrer-Policy", "no-referrer")
 		c.Next()
 	}
 }

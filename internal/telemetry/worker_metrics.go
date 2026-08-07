@@ -3,7 +3,6 @@ package telemetry
 
 import (
 	"context"
-	"fmt"
 
 	"go.opentelemetry.io/otel/metric"
 )
@@ -21,22 +20,14 @@ type WorkerMetrics struct {
 func NewWorkerMetrics(mp metric.MeterProvider) (*WorkerMetrics, error) {
 	meter := mp.Meter("github.com/luisfelipecoelho/go-template/worker")
 
-	processed, err := meter.Int64Counter(
-		"worker.messages.processed",
-		metric.WithDescription("Count of messages processed successfully."),
-		metric.WithUnit("{message}"),
-	)
+	processed, err := newInt64Counter(meter, "worker.messages.processed", "Count of messages processed successfully.", "{message}")
 	if err != nil {
-		return nil, fmt.Errorf("creating worker.messages.processed counter: %w", err)
+		return nil, err
 	}
 
-	failed, err := meter.Int64Counter(
-		"worker.messages.failed",
-		metric.WithDescription("Count of messages that failed processing."),
-		metric.WithUnit("{message}"),
-	)
+	failed, err := newInt64Counter(meter, "worker.messages.failed", "Count of messages that failed processing.", "{message}")
 	if err != nil {
-		return nil, fmt.Errorf("creating worker.messages.failed counter: %w", err)
+		return nil, err
 	}
 
 	return &WorkerMetrics{processed: processed, failed: failed}, nil

@@ -7,14 +7,17 @@ ops/
 ├── docker/otel-collector.yaml       local OTel collector config (compose)
 ├── k8s/
 │   ├── base/                        environment-agnostic manifests
-│   │   ├── deployment.yaml           probes, securityContext, resources
-│   │   ├── service.yaml
-│   │   ├── hpa.yaml
+│   │   ├── deployment.yaml           server: probes, securityContext, resources,
+│   │   │                             preStop drain, topology spread, rollout strategy
+│   │   ├── worker-deployment.yaml    worker: same image, args ["worker"], no probes/HPA
+│   │   ├── service.yaml              selects component=server only
+│   │   ├── hpa.yaml                  CPU 70%, scale-down stabilization
+│   │   ├── pdb.yaml                  maxUnavailable: 1 (never blocks a node drain)
 │   │   └── kustomization.yaml         configMapGenerator (hashed → auto-rollout)
 │   └── overlays/
-│       ├── dev/                      LOG_LEVEL=debug, full sampling, dev ns
+│       ├── dev/                      LOG_LEVEL=debug, full sampling, AUTH off, dev ns
 │       ├── staging/                  prod-like, 50% sampling
-│       └── prod/                     10% sampling, ExternalSecret, HPA 3–20
+│       └── prod/                     10% sampling, ExternalSecret, HPA 1–20
 ├── argocd/application.yaml           optional ArgoCD Application (prod)
 └── aws/                              Terraform example: VPC + EKS + ECR + IRSA — see ops/aws/README.md
 ```
@@ -47,11 +50,16 @@ docker tag go-template:latest go-template:dev
 kubectl create namespace go-template-dev --dry-run=client -o yaml | kubectl apply -f -
 make k8s-apply ENV=dev
 
-# 4. Verify
+# 4. Verify (the Service listens on 80 and targets the container's 8080)
 kubectl -n go-template-dev get pods
-kubectl -n go-template-dev port-forward svc/go-template 8080:8080 &
+kubectl -n go-template-dev port-forward svc/go-template 8080:80 &
 curl localhost:8080/healthz
 ```
+
+You should see two Deployments: `go-template` (the HTTP server, behind the
+Service) and `go-template-worker`. The worker idles while
+`MESSAGING_DRIVER=memory`, because that bus is in-process — it starts doing
+work once the driver points at a real broker.
 
 `kind delete cluster --name go-template` tears it down. This path never
 touches ArgoCD or a real cloud — it's the fastest way to confirm the

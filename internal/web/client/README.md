@@ -28,10 +28,33 @@ server.
 Construct one `client.Client` per downstream dependency you call out to
 (not one global client) — retry/breaker state should be scoped per
 dependency, since one flaky downstream shouldn't trip the breaker for
-another. Tune `Config.Timeout`/`Retry`/`Breaker` per call site; the
-`internal/config.HTTPClientConfig` fields (`HTTP_CLIENT_TIMEOUT`,
-`HTTP_CLIENT_MAX_RETRIES`) are the template's example of wiring one
-instance from env.
+another. Tune `Config.Timeout`/`Retry`/`Breaker` per call site.
+
+**This package has no env config of its own**, on purpose: nothing in the
+template makes a downstream call, and config that is parsed but never read
+is a lie about what the service does. When you add a real call site, add the
+keys alongside it — one line each in `internal/config`:
+
+```go
+// in Config
+Payments PaymentsClientConfig
+
+// per dependency, named for the dependency — not a single global "HTTP_CLIENT"
+type PaymentsClientConfig struct {
+    Timeout     time.Duration // PAYMENTS_TIMEOUT
+    MaxAttempts int           // PAYMENTS_MAX_ATTEMPTS
+}
+
+// in load()'s struct literal
+Payments: PaymentsClientConfig{
+    Timeout:     p.duration("PAYMENTS_TIMEOUT", 10*time.Second),
+    MaxAttempts: p.intRange("PAYMENTS_MAX_ATTEMPTS", 3, 1, 10),
+},
+```
+
+Then construct the client in the composition root
+(`internal/cli/server.go`) like any other dependency and inject it into the
+service that calls out.
 
 ## Detaching
 

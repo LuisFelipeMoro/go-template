@@ -38,6 +38,16 @@ type testRoutes struct{}
 func (testRoutes) Register(rg *gin.RouterGroup) {
 	rg.GET("/ping", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 	rg.GET("/boom", func(_ *gin.Context) { panic("boom") })
+	// /slow reports whether its request context was cancelled before the work
+	// finished — the observable effect Timeout is responsible for.
+	rg.GET("/slow", func(c *gin.Context) {
+		select {
+		case <-c.Request.Context().Done():
+			c.JSON(http.StatusOK, gin.H{"cancelled": true})
+		case <-time.After(2 * time.Second):
+			c.JSON(http.StatusOK, gin.H{"cancelled": false})
+		}
+	})
 }
 
 type stubAuth struct{ valid string }
@@ -62,7 +72,7 @@ func server(t *testing.T, buf *bytes.Buffer, chain ...gin.HandlerFunc) *web.Serv
 	log := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelError}))
 	ready := web.NewReadiness()
 	ready.SetReady(true)
-	return web.NewServer(web.Config{MaxBodyBytes: 1 << 20, Env: "prod"}, log, ready,
+	return web.NewServer(web.Config{Env: "prod"}, log, ready,
 		web.WithGroupMiddleware(chain...), web.WithRoutes(testRoutes{}))
 }
 
@@ -146,7 +156,7 @@ func TestBodyLimit(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	ready := web.NewReadiness()
 	ready.SetReady(true)
-	s := web.NewServer(web.Config{MaxBodyBytes: 4, Env: "prod"}, log, ready,
+	s := web.NewServer(web.Config{Env: "prod"}, log, ready,
 		web.WithGroupMiddleware(middleware.RequestID(), middleware.BodyLimit(4)),
 		web.WithRoutes(bodyRoute{}))
 	req := httptest.NewRequest(http.MethodPost, "/v1/big", io.NopCloser(bytes.NewBufferString(`{"aaaa":"bbbb"}`)))
@@ -163,4 +173,42 @@ func (bodyRoute) Register(rg *gin.RouterGroup) {
 			c.Status(http.StatusOK)
 		}
 	})
+}
+
+func TestTimeout_CancelsHandlerContext(t *testing.T) {
+	t.Parallel()
+	s := server(t, nil, middleware.Timeout(20*time.Millisecond))
+
+	rec := get(s, "/v1/slow", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"cancelled":true}`, rec.Body.String(),
+		"handler context must be cancelled at the deadline so downstream work stops")
+}
+
+func TestTimeout_LeavesFastHandlersUntouched(t *testing.T) {
+	t.Parallel()
+	s := server(t, nil, middleware.Timeout(time.Minute))
+
+	rec := get(s, "/v1/ping", "")
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"ok":true}`, rec.Body.String(), "a generous deadline must not alter the response")
+}
+
+func TestTimeout_DeadlineIsSetOnRequestContext(t *testing.T) {
+	t.Parallel()
+	var (
+		hasDeadline bool
+		deadline    time.Time
+	)
+	probe := func(c *gin.Context) {
+		deadline, hasDeadline = c.Request.Context().Deadline()
+		c.Next()
+	}
+	s := server(t, nil, middleware.Timeout(time.Minute), probe)
+
+	require.Equal(t, http.StatusOK, get(s, "/v1/ping", "").Code)
+	require.True(t, hasDeadline, "Timeout must install a deadline on the request context")
+	assert.WithinDuration(t, time.Now().Add(time.Minute), deadline, 5*time.Second)
 }

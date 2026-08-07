@@ -17,14 +17,14 @@ func TestNew_MemoryDriver(t *testing.T) {
 	require.NotNil(t, pub)
 	require.NotNil(t, con)
 	require.NotNil(t, closer)
-	t.Cleanup(func() { _ = closer.Close() })
+	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	// Round-trip proves it is the real Memory bus.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	got := make(chan Message, 1)
 	go func() {
-		_ = con.Consume(ctx, "t", func(_ context.Context, m Message) error { got <- m; return nil })
+		assert.NoError(t, con.Consume(ctx, "t", func(_ context.Context, m Message) error { got <- m; return nil }))
 	}()
 	require.NoError(t, pub.Publish(context.Background(), Message{Topic: "t", Key: "k"}))
 	select {
@@ -39,7 +39,7 @@ func TestNew_NoneDriverDetachesMessaging(t *testing.T) {
 	t.Parallel()
 	pub, con, closer, err := New("none")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = closer.Close() })
+	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	// Publish is a silent no-op.
 	require.NoError(t, pub.Publish(context.Background(), Message{Topic: "t"}))

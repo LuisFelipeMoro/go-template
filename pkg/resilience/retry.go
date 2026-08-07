@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"time"
 )
@@ -99,7 +100,7 @@ func Retry[T any](ctx context.Context, cfg RetryConfig, fn func(ctx context.Cont
 
 // backoff computes the capped, jittered delay before the given attempt's retry.
 func backoff(cfg RetryConfig, attempt int) time.Duration {
-	d := float64(cfg.BaseDelay) * math2Pow(attempt-1)
+	d := float64(cfg.BaseDelay) * math.Pow(2, float64(attempt-1))
 	if d > float64(cfg.MaxDelay) {
 		d = float64(cfg.MaxDelay)
 	}
@@ -112,15 +113,6 @@ func backoff(cfg RetryConfig, attempt int) time.Duration {
 		d = 0
 	}
 	return time.Duration(d)
-}
-
-// math2Pow returns 2^n for small non-negative n without importing math.
-func math2Pow(n int) float64 {
-	out := 1.0
-	for range n {
-		out *= 2
-	}
-	return out
 }
 
 // sleepCtx waits d or returns early if ctx is done.

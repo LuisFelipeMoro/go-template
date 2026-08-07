@@ -1,0 +1,16 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: go-template
+spec:
+  # maxUnavailable (not minAvailable) is deliberate: the base HPA floor is
+  # minReplicas: 1, and `minAvailable: 1` against a single replica would block
+  # node drains forever — a cluster upgrade would hang waiting for a budget that
+  # can never be satisfied. maxUnavailable: 1 always permits a drain to proceed,
+  # and once you scale past 1 replica it caps voluntary disruption at one pod at
+  # a time. Raise this to `minAvailable: N` only after raising minReplicas.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: go-template
+      app.kubernetes.io/component: server

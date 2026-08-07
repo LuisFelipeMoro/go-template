@@ -10,11 +10,26 @@ hardcoded middleware — it applies whatever chain it's given.
 ## What's here
 
 - `middleware.go` — `RequestID` (correlation id, first in the chain so every
-  layer can read it), `SecurityHeaders`, `BodyLimit`, `Telemetry` (one
-  metric per response + a log **only** on 5xx, per the errors-only logging
-  policy — see ADR-6 in `ARCHITECTURE.md`), `Recovery` (panic → 500,
-  logged without leaking to the client). Also declares `Metrics`, the
-  consumer-owned interface `internal/telemetry.HTTPMetrics` implements.
+  layer can read it), `SecurityHeaders` (`nosniff`, `DENY`, `no-store`, plus
+  a locked-down `Content-Security-Policy: default-src 'none'` and
+  `Referrer-Policy: no-referrer` — an API renders nothing, so every directive
+  denies; HSTS is left to the ingress that terminates TLS), `BodyLimit`,
+  `Telemetry` (one metric per response + a log **only** on 5xx, per the
+  errors-only logging policy — see ADR-6 in `ARCHITECTURE.md`), `Recovery`
+  (panic → 500, logged without leaking to the client). Also declares
+  `Metrics`, the consumer-owned interface `internal/telemetry.HTTPMetrics`
+  implements.
+- `timeout.go` — `Timeout`, a per-request deadline on the **request
+  context** (`HTTP_HANDLER_TIMEOUT`). This is not what `http.Server`'s
+  read/write deadlines do: those are enforced by the transport and merely
+  sever the connection, leaving the handler goroutine running and still
+  holding its throttle slot and downstream connections. Cancelling the
+  context is what actually stops the work. It writes no response itself —
+  that would race a handler already writing — so the expired deadline
+  surfaces as `context.DeadlineExceeded` and each domain's error mapper
+  renders it (`internal/item/http` → 504). Keep the value below
+  `HTTP_WRITE_TIMEOUT` so the error envelope is written before the
+  transport cuts the connection.
 - `auth.go` — `Auth`, gating the chain on a valid bearer token; declares
   `Authenticator`, the consumer-owned interface `internal/auth.StaticKeys`
   (or any replacement) implements. Failure is always a generic 401 — never
@@ -27,10 +42,12 @@ hardcoded middleware — it applies whatever chain it's given.
 ## Ordering (as wired in `internal/cli/server.go`)
 
 `RequestID` → `SecurityHeaders` → `Telemetry` → `Recovery` → `[Throttle]` →
-`[otelgin tracing]` → `[Auth]` → `BodyLimit`. RequestID first so the id
-reaches every layer; Telemetry high so it observes 401/429/503/recovered-500
-below it; Throttle and Auth reject before reaching handlers; BodyLimit last,
-just before routes.
+`[otelgin tracing]` → `[Auth]` → `Timeout` → `BodyLimit`. RequestID first so
+the id reaches every layer; Telemetry high so it observes
+401/429/503/recovered-500 below it; Throttle and Auth reject before reaching
+handlers; `Timeout` after them so a rejected request is never charged against
+the handler deadline, and before `BodyLimit` so the deadline also covers
+request decoding. Bracketed entries are config-gated.
 
 ## When to extend
 

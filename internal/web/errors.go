@@ -13,6 +13,7 @@ const (
 	CodeTooLarge     = "payload_too_large"
 	CodeUnauthorized = "unauthorized"
 	CodeOverloaded   = "overloaded"
+	CodeTimeout      = "timeout"
 
 	// GenericInternal is the client-facing 500 message — it never leaks internals.
 	GenericInternal = "internal error"

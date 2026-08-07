@@ -3,8 +3,10 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -30,15 +32,34 @@ type RedisCache struct {
 // NewRedis dials a Redis-compatible server (Redis, Valkey, KeyDB, DragonflyDB,
 // Elasticache, MemoryDB) and verifies connectivity with a PING so a bad address
 // fails fast at startup. Password is a secret sourced from the environment.
+//
+// Set cfg.TLS for any server reached over a real network: without it the AUTH
+// password and every cached value travel in plaintext.
 func NewRedis(ctx context.Context, cfg RedisConfig) (*RedisCache, error) {
-	client := redis.NewClient(&redis.Options{
+	opts := &redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
-	})
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("pinging redis at %s: %w", cfg.Addr, err)
+	}
+	if cfg.TLS {
+		// ServerName is derived from Addr for hostname verification; certificate
+		// validation stays on (no InsecureSkipVerify) so a MITM fails the dial.
+		host, _, err := net.SplitHostPort(cfg.Addr)
+		if err != nil {
+			return nil, fmt.Errorf("parsing redis address %s: %w", cfg.Addr, err)
+		}
+		opts.TLSConfig = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+	}
+	client := redis.NewClient(opts)
+	if pingErr := client.Ping(ctx).Err(); pingErr != nil {
+		// The client is abandoned, but its close error is still reported:
+		// errors.Join drops nils, so a clean close leaves the message unchanged
+		// while a failing one surfaces instead of vanishing.
+		failure := pingErr
+		if closeErr := client.Close(); closeErr != nil {
+			failure = errors.Join(pingErr, fmt.Errorf("closing redis client: %w", closeErr))
+		}
+		return nil, fmt.Errorf("pinging redis at %s: %w", cfg.Addr, failure)
 	}
 	return &RedisCache{doer: goRedis{client: client}}, nil
 }

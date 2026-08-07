@@ -1,0 +1,67 @@
+# The async worker — the same image as the server (ADR-1: one binary, one
+# artifact), selected by `args: ["worker"]` instead of ["server"]. It is a
+# separate Deployment so the two scale independently: request throughput drives
+# the server, queue depth drives the worker.
+#
+# IMPORTANT — with MESSAGING_DRIVER=memory (the base default) the bus is
+# in-process, so this pod consumes a queue that nothing else can publish to and
+# will simply idle. It becomes useful once MESSAGING_DRIVER points at a real
+# broker (SQS/Kafka/NATS). Delete this file and its kustomization entry if your
+# service has no async path.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-template-worker
+spec:
+  # No HPA here: worker capacity should track queue depth (KEDA / a custom
+  # metric), not CPU. Scale it explicitly until you add one.
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: go-template
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: go-template
+        app.kubernetes.io/component: worker
+    spec:
+      # Matches the server: SHUTDOWN_TIMEOUT (20s) drains the in-flight message
+      # before SIGKILL. No preStop delay is needed — the worker serves no
+      # Service endpoints, so there is no routing race to lose.
+      terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: go-template
+          args: ["worker"]
+          # Shares the server's ConfigMap: the worker reads MESSAGING_DRIVER,
+          # LOG_LEVEL, SHUTDOWN_TIMEOUT and OTEL_* from it and ignores the
+          # HTTP-only keys.
+          envFrom:
+            - configMapRef:
+                name: go-template-config
+            - secretRef:
+                name: go-template-secrets
+                optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # No HTTP probes: this process runs no listener, and the distroless
+          # image has no shell for an exec probe. Kubernetes restarts it on
+          # crash; liveness beyond that needs a consumer-lag metric and alert,
+          # not a probe.

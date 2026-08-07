@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// errBoom is the callee failure used where a test must distinguish the wrapped
+// downstream error from a breaker rejection via errors.Is.
+var errBoom = errors.New("boom")
+
 func TestBreaker_OpensAfterThreshold(t *testing.T) {
 	t.Parallel()
 	cb := NewCircuitBreaker(BreakerConfig{FailureThreshold: 3, Cooldown: time.Minute, HalfOpenMax: 1})
@@ -89,11 +93,11 @@ func TestBreaker_HalfOpenLimitsProbes(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = cb.Execute(context.Background(), func(ctx context.Context) error {
+		assert.NoError(t, cb.Execute(context.Background(), func(ctx context.Context) error {
 			close(probeStarted)
 			<-release
 			return nil
-		})
+		}))
 	}()
 
 	<-probeStarted
@@ -111,13 +115,21 @@ func TestBreaker_ConcurrentExecuteRaceClean(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_ = cb.Execute(context.Background(), func(ctx context.Context) error {
+			execErr := cb.Execute(context.Background(), func(ctx context.Context) error {
 				if n%2 == 0 {
-					return errors.New("x")
+					return errBoom
 				}
 				return nil
 			})
-			_ = cb.State()
+			// Under concurrency the only two failure modes are the callee's own
+			// error and a breaker rejection. Asserting that pins the contract
+			// instead of discarding the result to keep the race detector busy.
+			if execErr != nil {
+				assert.True(t,
+					errors.Is(execErr, errBoom) || errors.Is(execErr, ErrOpen),
+					"unexpected breaker error: %v", execErr)
+			}
+			assert.Contains(t, []State{StateClosed, StateOpen, StateHalfOpen}, cb.State())
 		}(i)
 	}
 	wg.Wait()

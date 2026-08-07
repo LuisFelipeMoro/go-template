@@ -20,3 +20,6 @@ configMapGenerator:
       - APP_ENV=dev
       - LOG_LEVEL=debug # dev only — prod stays at the errors-only default
       - OTEL_SAMPLE_RATIO=1.0
+      # Dev only: APP_ENV=dev exempts this from the prod auth guard, so the
+      # cluster runs without provisioning keys. Never set this in staging/prod.
+      - AUTH_ENABLED=false

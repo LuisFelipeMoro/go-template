@@ -62,6 +62,12 @@ func TestValidate(t *testing.T) {
 		{"missing hyphen", "a2b7172eXcca4-4fa6-89e2-5f65d45e850f", true},
 		{"non-hex", "z2b7172e-cca4-4fa6-89e2-5f65d45e850f", true},
 		{"empty", "", true},
+		// U+0430 CYRILLIC SMALL LETTER A is two bytes (0xD0 0xB0); truncating it
+		// to a single byte yields 0x30 ('0'), which is valid hex. Sitting in the
+		// final group it keeps the string at exactly 36 bytes with every hyphen
+		// at its canonical offset, so a rune-wise scan accepts it and only a
+		// byte-wise scan rejects it.
+		{"multibyte rune truncating to hex", "a2b7172e-cca4-4fa6-89e2-а0123456789", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
