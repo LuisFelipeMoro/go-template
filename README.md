@@ -52,6 +52,26 @@ still recognize a year later. Everything below is wired, tested, and documented
 - kubectl (with kustomize) — for deploys
 - `make tools` installs golangci-lint and govulncheck
 
+### Vulnerability baseline
+
+`make vuln` must report **no vulnerabilities and exit 0** — that is a gate, not a
+report to skim. It scans by reachable symbol, so a finding means *this code*
+calls the vulnerable path.
+
+Two knobs fix findings, and which one depends on where the finding lives:
+
+| Finding in | Fix |
+|---|---|
+| the standard library | raise the `toolchain` directive in `go.mod` (currently `go1.26.6`) |
+| a dependency | `go get <module>@<fixed version> && go mod tidy` |
+
+One advisory is reported only under `govulncheck -show verbose` and can never be
+cleared: **GO-2026-5932**, which marks `golang.org/x/crypto/openpgp` as
+unmaintained (`Fixed in: N/A`). This template does not import that package — it
+requires `golang.org/x/crypto` transitively through gin's validator, for
+`sha3` — so the advisory is module-level and unreachable. It does not appear in
+the symbol scan and does not fail the gate.
+
 ## Quickstart
 
 ```bash
@@ -180,9 +200,11 @@ you deploy anything are `AUTH_ENABLED` and `CACHE_REDIS_TLS`.
 |----------|---------|-------------|
 | `APP_ENV` | `dev` | `dev` or `prod` (gin mode) |
 | `HTTP_PORT` | `8080` | HTTP listen port |
-| `HTTP_READ_TIMEOUT` | `5s` | server read timeout |
+| `HTTP_READ_TIMEOUT` | `5s` | server read timeout (headers + body) |
+| `HTTP_READ_HEADER_TIMEOUT` | `2s` | header-read deadline on its own — the Slowloris bound that survives raising `HTTP_READ_TIMEOUT` for slow bodies |
 | `HTTP_WRITE_TIMEOUT` | `10s` | server write timeout |
 | `HTTP_IDLE_TIMEOUT` | `60s` | keep-alive idle timeout |
+| `HTTP_MAX_HEADER_BYTES` | `1048576` | request header cap (net/http's implicit 1 MiB, made explicit and tunable) |
 | `HTTP_HANDLER_TIMEOUT` | `8s` | per-request deadline on the handler context (cancels downstream work → 504); keep below `HTTP_WRITE_TIMEOUT` |
 | `SHUTDOWN_TIMEOUT` | `20s` | graceful-shutdown bound |
 | `LOG_LEVEL` | `error` | errors-only in prod; use `debug` locally |
@@ -198,6 +220,8 @@ you deploy anything are `AUTH_ENABLED` and `CACHE_REDIS_TLS`.
 | `AUTH_API_KEYS` | — | comma-separated bearer keys (**secret**; required when auth on) |
 | `THROTTLE_ENABLED` | `false` | per-instance in-flight concurrency cap (backpressure, not a rate limit) |
 | `THROTTLE_MAX_INFLIGHT` | `256` | max concurrent `/v1` requests when throttling |
+| `PPROF_ENABLED` | `false` | serve `net/http/pprof` on a private listener (**off by default — it exposes heap contents and goroutine stacks**) |
+| `PPROF_ADDR` | `127.0.0.1:6060` | profiling bind address. `APP_ENV=prod` refuses a non-loopback bind — reach it with `kubectl port-forward deploy/go-template 6060:6060` |
 | `AUTH_ALLOW_INSECURE_NO_AUTH` | `false` | opt out of the prod auth guard — only when a gateway/mesh enforces authn |
 | `OTEL_ENABLED` | `false` | enable traces + metrics export |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP gRPC endpoint |
@@ -370,6 +394,26 @@ documentado — e as partes que você não precisa podem ser removidas sem sobra
 - kubectl (com kustomize) — para deploys
 - `make tools` instala golangci-lint e govulncheck
 
+### Baseline de vulnerabilidades
+
+`make vuln` deve reportar **nenhuma vulnerabilidade e sair com 0** — é um gate,
+não um relatório para folhear. A varredura é por símbolo alcançável: um achado
+significa que *este código* chama o caminho vulnerável.
+
+Dois botões resolvem um achado, e qual deles depende de onde ele está:
+
+| Achado em | Correção |
+|---|---|
+| biblioteca padrão | suba a diretiva `toolchain` no `go.mod` (hoje `go1.26.6`) |
+| dependência | `go get <módulo>@<versão corrigida> && go mod tidy` |
+
+Um aviso só aparece com `govulncheck -show verbose` e nunca pode ser zerado:
+**GO-2026-5932**, que marca `golang.org/x/crypto/openpgp` como não mantido
+(`Fixed in: N/A`). Este template não importa esse pacote — requer
+`golang.org/x/crypto` transitivamente via o validator do gin, por causa do
+`sha3` — então o aviso é de módulo e inalcançável. Não aparece na varredura por
+símbolo e não reprova o gate.
+
 ## Início rápido
 
 ```bash
@@ -494,9 +538,11 @@ de qualquer deploy são `AUTH_ENABLED` e `CACHE_REDIS_TLS`.
 |----------|--------|-----------|
 | `APP_ENV` | `dev` | `dev` ou `prod` (modo do gin) |
 | `HTTP_PORT` | `8080` | porta HTTP |
-| `HTTP_READ_TIMEOUT` | `5s` | timeout de leitura |
+| `HTTP_READ_TIMEOUT` | `5s` | timeout de leitura (cabeçalhos + corpo) |
+| `HTTP_READ_HEADER_TIMEOUT` | `2s` | deadline só da leitura de cabeçalhos — o limite anti-Slowloris que sobrevive a aumentar `HTTP_READ_TIMEOUT` para corpos lentos |
 | `HTTP_WRITE_TIMEOUT` | `10s` | timeout de escrita |
 | `HTTP_IDLE_TIMEOUT` | `60s` | timeout de keep-alive |
+| `HTTP_MAX_HEADER_BYTES` | `1048576` | limite dos cabeçalhos da requisição (o 1 MiB implícito do net/http, agora explícito e ajustável) |
 | `HTTP_HANDLER_TIMEOUT` | `8s` | deadline por requisição no contexto do handler (cancela o trabalho downstream → 504); mantenha abaixo de `HTTP_WRITE_TIMEOUT` |
 | `SHUTDOWN_TIMEOUT` | `20s` | limite do graceful shutdown |
 | `LOG_LEVEL` | `error` | somente erros em prod; use `debug` localmente |
@@ -512,6 +558,8 @@ de qualquer deploy são `AUTH_ENABLED` e `CACHE_REDIS_TLS`.
 | `AUTH_API_KEYS` | — | chaves bearer separadas por vírgula (**segredo**; obrigatório com auth on) |
 | `THROTTLE_ENABLED` | `false` | limite de concorrência por instância (backpressure, não rate limit) |
 | `THROTTLE_MAX_INFLIGHT` | `256` | máximo de requisições `/v1` concorrentes ao throttle |
+| `PPROF_ENABLED` | `false` | serve `net/http/pprof` num listener privado (**desligado por padrão — expõe conteúdo de heap e stacks de goroutines**) |
+| `PPROF_ADDR` | `127.0.0.1:6060` | endereço do profiling. `APP_ENV=prod` recusa bind fora de loopback — acesse com `kubectl port-forward deploy/go-template 6060:6060` |
 | `AUTH_ALLOW_INSECURE_NO_AUTH` | `false` | desativa a trava de auth em prod — só quando um gateway/mesh garante a autenticação |
 | `OTEL_ENABLED` | `false` | habilita exportação de traces + métricas |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | endpoint OTLP gRPC |

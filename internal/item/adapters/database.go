@@ -17,6 +17,9 @@ import (
 // Database is a goroutine-safe in-memory item.Storer — the zero-infrastructure
 // default. Swap it for a real database (e.g. Postgres with parameterized
 // queries only); the service depends on item.Storer, not this type.
+//
+// The zero value is unusable: items is a nil map, which panics on first write.
+// Construct via NewDatabase.
 type Database struct {
 	mu    sync.RWMutex
 	items map[string]item.Item

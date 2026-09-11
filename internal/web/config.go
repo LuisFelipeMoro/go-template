@@ -11,10 +11,16 @@ import "time"
 // which the composition root puts in the chain. Carrying a MaxBodyBytes field
 // here that nothing in this package reads would imply the server enforces it.
 type Config struct {
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
-	Env          string // "dev" enables gin debug mode; anything else is release
-	Version      string
+	Port        int
+	ReadTimeout time.Duration
+	// ReadHeaderTimeout bounds the header read independently of ReadTimeout, so
+	// raising ReadTimeout to accept slow bodies cannot reopen Slowloris.
+	ReadHeaderTimeout time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	// MaxHeaderBytes caps request headers. net/http defaults to 1 MiB; setting
+	// it explicitly makes the bound reviewable instead of inherited.
+	MaxHeaderBytes int
+	Env            string // "dev" enables gin debug mode; anything else is release
+	Version        string
 }

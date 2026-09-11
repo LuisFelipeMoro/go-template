@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 
 # --- Build stage -------------------------------------------------------------
+# The minor tag floats to the newest 1.26.x, so a rebuild always picks up
+# stdlib security fixes. It can never float DOWN past the floor: go.mod's
+# `toolchain` directive pins the minimum patch release and the go command
+# fetches it if the base image is older. Raise that directive, not this tag,
+# when govulncheck reports a stdlib finding.
 FROM golang:1.26 AS builder
 
 WORKDIR /src

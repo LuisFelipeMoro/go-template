@@ -26,8 +26,12 @@ func TestLoad_EmptyEnvYieldsDefaults(t *testing.T) {
 	assert.Equal(t, "dev", cfg.Env)
 	assert.Equal(t, 8080, cfg.HTTPPort)
 	assert.Equal(t, 5*time.Second, cfg.ReadTimeout)
+	assert.Equal(t, 2*time.Second, cfg.ReadHeaderTimeout)
 	assert.Equal(t, 10*time.Second, cfg.WriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.IdleTimeout)
+	assert.Equal(t, 1048576, cfg.MaxHeaderBytes)
+	assert.False(t, cfg.Pprof.Enabled, "profiling must be off unless asked for")
+	assert.Equal(t, "127.0.0.1:6060", cfg.Pprof.Addr, "profiling binds loopback by default")
 	assert.Equal(t, 20*time.Second, cfg.ShutdownTimeout)
 	assert.Equal(t, "error", cfg.LogLevel)
 	assert.Equal(t, int64(1048576), cfg.MaxBodyBytes)
@@ -53,6 +57,8 @@ func TestLoad_ValidOverrides(t *testing.T) {
 		"APP_ENV":                     "prod",
 		"HTTP_PORT":                   "9090",
 		"HTTP_READ_TIMEOUT":           "1h",
+		"HTTP_READ_HEADER_TIMEOUT":    "3s",
+		"HTTP_MAX_HEADER_BYTES":       "4096",
 		"HTTP_WRITE_TIMEOUT":          "2s",
 		"HTTP_IDLE_TIMEOUT":           "30s",
 		"SHUTDOWN_TIMEOUT":            "15s",
@@ -71,6 +77,8 @@ func TestLoad_ValidOverrides(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4317",
 		"OTEL_SERVICE_NAME":           "my-svc",
 		"OTEL_SAMPLE_RATIO":           "0.25",
+		"PPROF_ENABLED":               "true",
+		"PPROF_ADDR":                  "127.0.0.1:7070",
 	}
 
 	cfg, err := load(mapGetter(env))
@@ -79,6 +87,8 @@ func TestLoad_ValidOverrides(t *testing.T) {
 	assert.Equal(t, "prod", cfg.Env)
 	assert.Equal(t, 9090, cfg.HTTPPort)
 	assert.Equal(t, time.Hour, cfg.ReadTimeout)
+	assert.Equal(t, 3*time.Second, cfg.ReadHeaderTimeout)
+	assert.Equal(t, 4096, cfg.MaxHeaderBytes)
 	assert.Equal(t, 2*time.Second, cfg.WriteTimeout)
 	assert.Equal(t, 30*time.Second, cfg.IdleTimeout)
 	assert.Equal(t, 15*time.Second, cfg.ShutdownTimeout)
@@ -97,6 +107,8 @@ func TestLoad_ValidOverrides(t *testing.T) {
 	assert.Equal(t, "collector:4317", cfg.Otel.Endpoint)
 	assert.Equal(t, "my-svc", cfg.Otel.ServiceName)
 	assert.InDelta(t, 0.25, cfg.Otel.SampleRatio, 1e-9)
+	assert.True(t, cfg.Pprof.Enabled)
+	assert.Equal(t, "127.0.0.1:7070", cfg.Pprof.Addr)
 }
 
 func TestLoad_WhitespaceTrimmed(t *testing.T) {
@@ -206,6 +218,101 @@ func TestLoad_InvalidValues(t *testing.T) {
 			_, err := load(mapGetter(tt.env))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantVar, "error must name the offending variable")
+		})
+	}
+}
+
+// Header limits are the Slowloris/header-bomb bounds. A bad value must stop the
+// process rather than silently fall back to a default an operator thinks they
+// overrode — a server running with different limits than the ones in git is the
+// failure this pins.
+func TestLoad_HeaderLimitsRejectBadValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"unparsable read-header timeout", map[string]string{"HTTP_READ_HEADER_TIMEOUT": "soon"}, "HTTP_READ_HEADER_TIMEOUT"},
+		{"negative read-header timeout", map[string]string{"HTTP_READ_HEADER_TIMEOUT": "-1s"}, "HTTP_READ_HEADER_TIMEOUT"},
+		{"zero max header bytes", map[string]string{"HTTP_MAX_HEADER_BYTES": "0"}, "HTTP_MAX_HEADER_BYTES"},
+		{"negative max header bytes", map[string]string{"HTTP_MAX_HEADER_BYTES": "-1"}, "HTTP_MAX_HEADER_BYTES"},
+		{"unparsable max header bytes", map[string]string{"HTTP_MAX_HEADER_BYTES": "1MB"}, "HTTP_MAX_HEADER_BYTES"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := load(mapGetter(tc.env))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want, "the error must name the offending key")
+		})
+	}
+}
+
+// The pprof guard is fail-secure like the auth guard: profiling exposes heap
+// contents and goroutine stacks, so a production bind that is reachable off-host
+// must refuse to start rather than serve. Every outcome is pinned so a later
+// refactor cannot quietly widen it.
+func TestLoad_PprofGuard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"prod, pprof off, any addr", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "false", "PPROF_ADDR": "0.0.0.0:6060",
+		}, false},
+		{"prod, pprof on loopback ip", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "127.0.0.1:6060",
+		}, false},
+		{"prod, pprof on loopback name", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "localhost:6060",
+		}, false},
+		{"prod, pprof on ipv6 loopback", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "[::1]:6060",
+		}, false},
+		{"prod, pprof on all interfaces", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "0.0.0.0:6060",
+		}, true},
+		{"prod, pprof on wildcard host", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": ":6060",
+		}, true},
+		{"prod, pprof on routable ip", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "10.0.0.5:6060",
+		}, true},
+		{"prod, pprof on unresolvable name", map[string]string{
+			"APP_ENV": "prod", "AUTH_ENABLED": "true",
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "admin.internal:6060",
+		}, true},
+		{"dev, pprof on all interfaces", map[string]string{
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "0.0.0.0:6060",
+		}, false},
+		{"malformed addr rejected in any env", map[string]string{
+			"PPROF_ENABLED": "true", "PPROF_ADDR": "6060",
+		}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := load(mapGetter(tc.env))
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "PPROF", "the error must name the offending key")
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }

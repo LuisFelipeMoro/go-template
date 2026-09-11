@@ -142,8 +142,12 @@ func (s *Service) publish(ctx context.Context, evt Event) {
 	}
 }
 
+// validateID rejects a malformed id. The cause from uid.Validate is
+// deliberately not wrapped: this error reaches the client through the HTTP
+// adapter, and the parse detail ("invalid UUID length: 3") describes our
+// internals, not the caller's mistake. The sentinel is what the adapter maps on.
 func validateID(id string) error {
-	if err := uid.Validate(id); err != nil {
+	if uid.Validate(id) != nil {
 		return fmt.Errorf("id must be a UUID: %w", ErrInvalidArgument)
 	}
 	return nil
