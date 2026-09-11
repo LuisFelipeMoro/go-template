@@ -66,42 +66,23 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 	))
 
 	if !cfg.Enabled {
-		return &Providers{
-			Tracer:   tracenoop.NewTracerProvider(),
-			Meter:    metricnoop.NewMeterProvider(),
-			Shutdown: func(context.Context) error { return nil },
-		}, nil
+		return noopProviders(), nil
 	}
 
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(cfg.ServiceName),
-			semconv.ServiceVersion(cfg.Version),
-			semconv.DeploymentEnvironment(cfg.Env),
-		),
-	)
+	res, err := newResource(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("building otel resource: %w", err)
+		return nil, err
 	}
 
-	traceExp, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(cfg.Endpoint), otlptracegrpc.WithInsecure())
+	tp, err := newTracerProvider(ctx, cfg, res)
 	if err != nil {
-		return nil, fmt.Errorf("creating otlp trace exporter: %w", err)
+		return nil, err
 	}
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExp),
-		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRatio))),
-	)
 
-	metricExp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint(cfg.Endpoint), otlpmetricgrpc.WithInsecure())
+	mp, err := newMeterProvider(ctx, cfg, res)
 	if err != nil {
-		return nil, fmt.Errorf("creating otlp metric exporter: %w", err)
+		return nil, err
 	}
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
-		sdkmetric.WithResource(res),
-	)
 
 	// Set globals for zero-config third-party instrumentation; our own code uses
 	// the returned providers by injection.
@@ -116,4 +97,55 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 			return errors.Join(mp.Shutdown(ctx), tp.Shutdown(ctx))
 		},
 	}, nil
+}
+
+// noopProviders is what a telemetry-disabled process injects: real interfaces
+// that record nothing, so no call site needs a nil check.
+func noopProviders() *Providers {
+	return &Providers{
+		Tracer:   tracenoop.NewTracerProvider(),
+		Meter:    metricnoop.NewMeterProvider(),
+		Shutdown: func(context.Context) error { return nil },
+	}
+}
+
+// newResource builds the identity every span and metric carries.
+func newResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(cfg.ServiceName),
+			semconv.ServiceVersion(cfg.Version),
+			semconv.DeploymentEnvironment(cfg.Env),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("building otel resource: %w", err)
+	}
+	return res, nil
+}
+
+// newTracerProvider wires the OTLP trace exporter behind a batching,
+// parent-based ratio sampler.
+func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdktrace.TracerProvider, error) {
+	exp, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(cfg.Endpoint), otlptracegrpc.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("creating otlp trace exporter: %w", err)
+	}
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRatio))),
+	), nil
+}
+
+// newMeterProvider wires the OTLP metric exporter behind a periodic reader.
+func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
+	exp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint(cfg.Endpoint), otlpmetricgrpc.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("creating otlp metric exporter: %w", err)
+	}
+	return sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+		sdkmetric.WithResource(res),
+	), nil
 }
