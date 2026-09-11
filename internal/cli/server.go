@@ -19,6 +19,7 @@ import (
 	"github.com/luisfelipecoelho/go-template/internal/lifecycle"
 	"github.com/luisfelipecoelho/go-template/internal/messaging"
 	"github.com/luisfelipecoelho/go-template/internal/middleware"
+	"github.com/luisfelipecoelho/go-template/internal/profiling"
 	"github.com/luisfelipecoelho/go-template/internal/telemetry"
 	"github.com/luisfelipecoelho/go-template/internal/web"
 )
@@ -132,16 +133,32 @@ func runServer(ctx context.Context, cfg config.Config) error {
 	}
 
 	server := web.NewServer(web.Config{
-		Port:         cfg.HTTPPort,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
-		Env:          cfg.Env,
-		Version:      version,
+		Port:              cfg.HTTPPort,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
+		Env:               cfg.Env,
+		Version:           version,
 	}, log, ready, opts...)
 
 	runner := lifecycle.NewRunner(log, cfg.ShutdownTimeout)
-	// Registered first → stopped last: flush telemetry after everything drained.
+	// Profiling is registered first so it stops last: a hung shutdown is exactly
+	// when a goroutine dump is worth having, so the pprof listener outlives every
+	// component it might be used to diagnose. It only exists when PPROF_ENABLED
+	// is set, is never mounted on the API mux, and config.Load refuses a
+	// non-loopback bind in production.
+	if cfg.Pprof.Enabled {
+		pp := profiling.New(cfg.Pprof.Addr)
+		runner.Add(lifecycle.Component{
+			Name:  "pprof",
+			Start: pp.Start,
+			Stop:  pp.Stop,
+		})
+	}
+	// Registered next → stopped second-to-last: flush telemetry after everything
+	// else drained.
 	runner.Add(lifecycle.Component{
 		Name:  "telemetry",
 		Start: func(context.Context) error { return nil },

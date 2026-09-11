@@ -64,10 +64,12 @@ func NewServer(cfg Config, log *slog.Logger, ready *Readiness, opts ...Option) *
 
 	engine := s.buildEngine()
 	s.http = &http.Server{
-		Handler:      engine,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		Handler:           engine,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 	}
 	return s
 }
