@@ -46,11 +46,11 @@ func TestDo_SuccessNoRetry(t *testing.T) {
 		_, werr := io.WriteString(w, "ok")
 		assert.NoError(t, werr)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	resp, err := fastClient(3).Do(context.Background(), getReq(t, context.Background(), srv.URL))
 	require.NoError(t, err)
-	defer closeBody(t, resp)
+	t.Cleanup(func() { closeBody(t, resp) })
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.EqualValues(t, 1, atomic.LoadInt32(&calls))
 }
@@ -65,11 +65,11 @@ func TestDo_RetriesOn5xxThenSucceeds(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	resp, err := fastClient(5).Do(context.Background(), getReq(t, context.Background(), srv.URL))
 	require.NoError(t, err)
-	defer closeBody(t, resp)
+	t.Cleanup(func() { closeBody(t, resp) })
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.EqualValues(t, 3, atomic.LoadInt32(&calls), "must retry until success")
 }
@@ -81,11 +81,11 @@ func TestDo_DoesNotRetry4xx(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusBadRequest)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	resp, err := fastClient(5).Do(context.Background(), getReq(t, context.Background(), srv.URL))
 	require.NoError(t, err, "4xx is a delivered response, not a transport error")
-	defer closeBody(t, resp)
+	t.Cleanup(func() { closeBody(t, resp) })
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.EqualValues(t, 1, atomic.LoadInt32(&calls), "4xx must not be retried")
 }
@@ -97,7 +97,7 @@ func TestDo_ExhaustsRetriesOnPersistent5xx(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	_, err := fastClient(3).Do(context.Background(), getReq(t, context.Background(), srv.URL))
 	require.Error(t, err)
@@ -117,14 +117,14 @@ func TestDo_RetriesPostWithGetBody(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	// http.NewRequestWithContext sets GetBody for a strings.Reader body.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(`{"k":"v"}`))
 	require.NoError(t, err)
 	resp, err := fastClient(3).Do(context.Background(), req)
 	require.NoError(t, err)
-	defer closeBody(t, resp)
+	t.Cleanup(func() { closeBody(t, resp) })
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Len(t, bodies, 2)
 	assert.Equal(t, `{"k":"v"}`, bodies[1], "body must be resent intact on retry")
@@ -135,7 +135,7 @@ func TestDo_BreakerOpensAfterFailures(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	c := New(Config{
 		Timeout: time.Second,
@@ -152,7 +152,7 @@ func TestDo_ContextCancelStops(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

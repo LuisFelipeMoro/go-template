@@ -194,7 +194,7 @@ func TestHealthcheck(t *testing.T) {
 				assert.Equal(t, "/healthz", r.URL.Path)
 				w.WriteHeader(tt.status)
 			}))
-			defer srv.Close()
+			t.Cleanup(srv.Close)
 
 			err := checkHealth(context.Background(), srv.URL+"/healthz", healthClient())
 			if tt.wantErr {
@@ -222,8 +222,8 @@ func TestHealthcheck_TimeoutBounded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		<-block
 	}))
-	defer srv.Close()
-	defer close(block)
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(block) })
 
 	client := &http.Client{Timeout: 100 * time.Millisecond}
 	err := checkHealth(context.Background(), srv.URL+"/healthz", client)

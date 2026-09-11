@@ -146,41 +146,17 @@ func load(get func(string) string) (Config, error) {
 		ReadHeaderTimeout: p.duration("HTTP_READ_HEADER_TIMEOUT", 2*time.Second),
 		WriteTimeout:      p.duration("HTTP_WRITE_TIMEOUT", 10*time.Second),
 		IdleTimeout:       p.duration("HTTP_IDLE_TIMEOUT", 60*time.Second),
-		MaxHeaderBytes:    p.intRange("HTTP_MAX_HEADER_BYTES", 1048576, 1, 1<<30),
 		HandlerTimeout:    p.duration("HTTP_HANDLER_TIMEOUT", 8*time.Second),
 		ShutdownTimeout:   p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
 		LogLevel:          p.enum("LOG_LEVEL", "error", "debug", "info", "warn", "error"),
+		MaxHeaderBytes:    p.intRange("HTTP_MAX_HEADER_BYTES", 1048576, 1, 1<<30),
 		MaxBodyBytes:      p.int64Min("MAX_BODY_BYTES", 1048576, 1),
-		// Driver names are validated by their factory (internal/messaging.New), so
-		// adding an adapter is a single-package change.
-		Cache: CacheConfig{
-			Driver:        p.str("CACHE_DRIVER", "none"),
-			TTL:           p.duration("CACHE_TTL", 5*time.Minute),
-			RedisAddr:     p.str("CACHE_REDIS_ADDR", "localhost:6379"),
-			RedisPassword: p.str("CACHE_REDIS_PASSWORD", ""),
-			RedisDB:       p.intRange("CACHE_REDIS_DB", 0, 0, 15),
-			RedisTLS:      p.boolean("CACHE_REDIS_TLS", false),
-		},
-		Messaging: MessagingConfig{Driver: p.str("MESSAGING_DRIVER", "memory")},
-		Auth: AuthConfig{
-			Enabled:             p.boolean("AUTH_ENABLED", false),
-			APIKeys:             p.csv("AUTH_API_KEYS"),
-			AllowInsecureNoAuth: p.boolean("AUTH_ALLOW_INSECURE_NO_AUTH", false),
-		},
-		Throttle: ThrottleConfig{
-			Enabled:     p.boolean("THROTTLE_ENABLED", false),
-			MaxInFlight: p.intRange("THROTTLE_MAX_INFLIGHT", 256, 1, 1_000_000),
-		},
-		Otel: OtelConfig{
-			Enabled:     p.boolean("OTEL_ENABLED", false),
-			Endpoint:    p.str("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
-			ServiceName: p.str("OTEL_SERVICE_NAME", "go-template"),
-			SampleRatio: p.ratio("OTEL_SAMPLE_RATIO", 1.0),
-		},
-		Pprof: PprofConfig{
-			Enabled: p.boolean("PPROF_ENABLED", false),
-			Addr:    p.str("PPROF_ADDR", "127.0.0.1:6060"),
-		},
+		Cache:             loadCache(&p),
+		Messaging:         loadMessaging(&p),
+		Auth:              loadAuth(&p),
+		Throttle:          loadThrottle(&p),
+		Otel:              loadOtel(&p),
+		Pprof:             loadPprof(&p),
 	}
 
 	if p.err != nil {
@@ -190,6 +166,57 @@ func load(get func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// The per-section loaders below all share the one parser, so the "errors are
+// values" accumulation still holds across every field: the single error check
+// stays in load. Driver names are validated by their own factory (e.g.
+// internal/messaging.New), so adding an adapter remains a one-package change.
+
+func loadCache(p *parser) CacheConfig {
+	return CacheConfig{
+		Driver:        p.str("CACHE_DRIVER", "none"),
+		TTL:           p.duration("CACHE_TTL", 5*time.Minute),
+		RedisAddr:     p.str("CACHE_REDIS_ADDR", "localhost:6379"),
+		RedisPassword: p.str("CACHE_REDIS_PASSWORD", ""),
+		RedisDB:       p.intRange("CACHE_REDIS_DB", 0, 0, 15),
+		RedisTLS:      p.boolean("CACHE_REDIS_TLS", false),
+	}
+}
+
+func loadMessaging(p *parser) MessagingConfig {
+	return MessagingConfig{Driver: p.str("MESSAGING_DRIVER", "memory")}
+}
+
+func loadAuth(p *parser) AuthConfig {
+	return AuthConfig{
+		Enabled:             p.boolean("AUTH_ENABLED", false),
+		APIKeys:             p.csv("AUTH_API_KEYS"),
+		AllowInsecureNoAuth: p.boolean("AUTH_ALLOW_INSECURE_NO_AUTH", false),
+	}
+}
+
+func loadThrottle(p *parser) ThrottleConfig {
+	return ThrottleConfig{
+		Enabled:     p.boolean("THROTTLE_ENABLED", false),
+		MaxInFlight: p.intRange("THROTTLE_MAX_INFLIGHT", 256, 1, 1_000_000),
+	}
+}
+
+func loadOtel(p *parser) OtelConfig {
+	return OtelConfig{
+		Enabled:     p.boolean("OTEL_ENABLED", false),
+		Endpoint:    p.str("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		ServiceName: p.str("OTEL_SERVICE_NAME", "go-template"),
+		SampleRatio: p.ratio("OTEL_SAMPLE_RATIO", 1.0),
+	}
+}
+
+func loadPprof(p *parser) PprofConfig {
+	return PprofConfig{
+		Enabled: p.boolean("PPROF_ENABLED", false),
+		Addr:    p.str("PPROF_ADDR", "127.0.0.1:6060"),
+	}
 }
 
 // validate enforces the cross-field rules that no single parser can see,
