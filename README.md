@@ -42,6 +42,7 @@ still recognize a year later. Everything below is wired, tested, and documented
 - **Resiliency** — context-aware retry (exponential backoff + jitter) and circuit breaker blueprints; per-request handler deadlines that actually cancel downstream work; graceful shutdown draining in-flight work on SIGTERM.
 - **Secure by default** — bearer auth that *fails closed* in prod, constant-time key comparison, strict JSON decoding, security headers, request body limits, distroless non-root image, and a `.golangci.yml` running `gosec`/`errorlint`/`bodyclose` in CI.
 - **Contract-first HTTP** — `api-spec.yaml` (OpenAPI 3.1) with Spectral linting; sample CRUD domain at `/v1/items`; `/healthz` + `/readyz` probes.
+- **Gates that can actually fail** — race detector, ≥85% coverage, `govulncheck` at zero, `jscpd` duplication ≤3%, goroutine-leak detection on every package that starts one, fuzz targets on every parser, and benchmarks with allocation counts. `make gates` runs the lot.
 - **Ship-ready packaging** — multi-stage Dockerfile (distroless, non-root, static), docker-compose with an OTel collector, and a Kustomize base wired for zero-downtime rollouts: server + worker Deployments, Service, HPA, PodDisruptionBudget, `preStop` drain hook, topology spread, and a hashed ConfigMap.
 
 ## Prerequisites
@@ -51,6 +52,38 @@ still recognize a year later. Everything below is wired, tested, and documented
 - Docker (+ Compose v2) — for the local stack
 - kubectl (with kustomize) — for deploys
 - `make tools` installs golangci-lint and govulncheck
+
+### Testing & gates
+
+```
+make test     # go test -race ./...
+make cover    # coverage, fails under 85%
+make lint     # gofmt + go vet + golangci-lint
+make dupe     # jscpd, fails above 3% duplication
+make vuln     # govulncheck, must be zero
+make gates    # all of the above, the same set CI enforces
+
+make bench                 # every benchmark, with allocs/op
+make fuzz                  # every fuzz target, 30s each
+make fuzz FUZZTIME=5m      # longer soak before a release
+```
+
+Four things here are not the Go default and are deliberate:
+
+- **Goroutine leaks fail tests.** Every package that starts a goroutine runs
+  `goleak.VerifyTestMain`. A goroutine that outlives its test is one that would
+  outlive a request or a shutdown in production.
+- **Parsers are fuzzed, not just table-tested.** `web.BindJSON`, `uid.Validate`
+  and the domain validators have fuzz targets asserting invariants that must
+  hold for *every* input — no panic, and acceptance implies the documented
+  bounds. Seed corpora are committed, so a crash found once becomes a permanent
+  regression test.
+- **Benchmarks report allocations.** `b.ReportAllocs()` everywhere: an
+  optimization that cuts time but adds allocations is usually a loss. Compare
+  runs with `benchstat`, never a single execution.
+- **Falsification over coverage.** Coverage is a floor, not a target. A test is
+  only kept once it has been observed to FAIL against a deliberately broken
+  version of the code it covers.
 
 ### Vulnerability baseline
 
@@ -91,7 +124,7 @@ curl localhost:8080/v1/items
 Tests, lint, coverage (≥85% enforced):
 
 ```bash
-make test lint cover
+make gates
 ```
 
 ## Docker & Compose
@@ -394,6 +427,38 @@ documentado — e as partes que você não precisa podem ser removidas sem sobra
 - kubectl (com kustomize) — para deploys
 - `make tools` instala golangci-lint e govulncheck
 
+### Testes e gates
+
+```
+make test     # go test -race ./...
+make cover    # cobertura, reprova abaixo de 85%
+make lint     # gofmt + go vet + golangci-lint
+make dupe     # jscpd, reprova acima de 3% de duplicação
+make vuln     # govulncheck, tem que ser zero
+make gates    # tudo acima, o mesmo conjunto que o CI cobra
+
+make bench                 # todos os benchmarks, com allocs/op
+make fuzz                  # todos os alvos de fuzz, 30s cada
+make fuzz FUZZTIME=5m      # soak mais longo antes de uma release
+```
+
+Quatro pontos aqui não são o padrão do Go e são deliberados:
+
+- **Vazamento de goroutine reprova o teste.** Todo pacote que inicia goroutine
+  roda `goleak.VerifyTestMain`. Uma goroutine que sobrevive ao seu teste é uma
+  que sobreviveria a uma requisição ou a um shutdown em produção.
+- **Parsers são fuzzados, não só testados por tabela.** `web.BindJSON`,
+  `uid.Validate` e os validadores de domínio têm alvos de fuzz afirmando
+  invariantes que valem para *qualquer* entrada — sem panic, e aceitar implica
+  os limites documentados. Os corpora semente são commitados: um crash achado
+  uma vez vira teste de regressão permanente.
+- **Benchmarks reportam alocações.** `b.ReportAllocs()` em todos: uma otimização
+  que corta tempo mas adiciona alocações normalmente é prejuízo. Compare
+  execuções com `benchstat`, nunca uma corrida só.
+- **Falsificação acima de cobertura.** Cobertura é piso, não alvo. Um teste só
+  é mantido depois de observado FALHANDO contra uma versão deliberadamente
+  quebrada do código que ele cobre.
+
 ### Baseline de vulnerabilidades
 
 `make vuln` deve reportar **nenhuma vulnerabilidade e sair com 0** — é um gate,
@@ -433,7 +498,7 @@ curl localhost:8080/v1/items
 Testes, lint e cobertura (≥85% obrigatório):
 
 ```bash
-make test lint cover
+make gates
 ```
 
 ## Docker e Compose
