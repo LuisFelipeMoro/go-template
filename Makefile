@@ -5,6 +5,8 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 COMMIT     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 COVER_MIN  := 85
+DUPE_MAX   := 3
+FUZZTIME   ?= 30s
 ENV        ?= dev
 
 # Tool versions are pinned and MUST match .github/workflows/ci.yml. With
@@ -12,6 +14,7 @@ ENV        ?= dev
 # only after you push — local and CI must reach the same verdict.
 GOLANGCI_VERSION  := v2.12.2
 GOVULNCHECK_VERSION := v1.6.0
+JSCPD_VERSION       := 4.0.5
 
 # json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26.
 # Export it so every go invocation below — build, test, vet, govulncheck —
@@ -24,8 +27,9 @@ LDFLAGS    := -s -w \
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build run run-worker test cover lint vuln tools hooks tidy clean \
-	docker-build compose-up compose-down k8s-render k8s-apply k8s-delete spec-lint
+.PHONY: help build run run-worker test cover bench fuzz lint dupe vuln tools hooks \
+	tidy clean docker-build compose-up compose-down k8s-render k8s-apply \
+	k8s-delete spec-lint gates
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -48,13 +52,32 @@ cover: ## Run tests with coverage and enforce the $(COVER_MIN)% gate
 	@go tool cover -func=coverage.out | tail -1
 	@go tool cover -func=coverage.out | tail -1 | awk '{gsub(/%/,"",$$3); if ($$3+0 < $(COVER_MIN)) {printf "coverage %.1f%% is below $(COVER_MIN)%%\n", $$3; exit 1}}'
 
+bench: ## Run every benchmark with allocation counts
+	go test -bench=. -benchmem -run='^$$' ./cmd/... ./internal/... ./pkg/...
+
+fuzz: ## Fuzz each target for $(FUZZTIME) (override: make fuzz FUZZTIME=5m)
+	@# Go fuzzes ONE target per invocation, so each is driven in turn. Seed
+	@# corpora live in testdata/fuzz/ and are committed: a crash found today
+	@# becomes a permanent regression test.
+	@set -e; for pkg in $$(go list ./cmd/... ./internal/... ./pkg/...); do \
+		for fn in $$(go test -list='^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz' || true); do \
+			echo "==> $$pkg $$fn"; \
+			go test -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) $$pkg; \
+		done; \
+	done
+
 lint: ## gofmt check + go vet + golangci-lint (install via make tools)
 	@fmt_out=$$(gofmt -l .); if [ -n "$$fmt_out" ]; then echo "gofmt needed:"; echo "$$fmt_out"; exit 1; fi
 	go vet ./...
 	golangci-lint run
 
+dupe: ## Copy-paste detection (fails above $(DUPE_MAX)% duplication)
+	npx -y jscpd@$(JSCPD_VERSION) .
+
 vuln: ## Scan dependencies for known vulnerabilities
 	govulncheck ./...
+
+gates: lint dupe cover vuln ## Run every quality gate the CI enforces
 
 tools: ## Install lint/vuln tooling into GOPATH/bin (versions pinned to CI)
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)

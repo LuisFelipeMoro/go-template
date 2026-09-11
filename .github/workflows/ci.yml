@@ -70,6 +70,21 @@ jobs:
           pct=$(go tool cover -func=coverage.out | tail -1 | awk '{gsub(/%/,"",$3); print $3}')
           awk "BEGIN{ if ($pct+0 < 85) { print \"coverage \" $pct \"% below 85%\"; exit 1 } }"
 
+      # Seeded fuzzing on every PR: short, but enough to catch a parser
+      # regression against the committed corpus before it reaches main. The
+      # seed corpora in testdata/fuzz/ are replayed by the normal `go test`
+      # above; this step additionally generates new inputs.
+      - name: Fuzz (short)
+        run: |
+          set -e
+          for pkg in $(go list ./cmd/... ./internal/... ./pkg/...); do
+            for fn in $(go test -list='^Fuzz' "$pkg" 2>/dev/null | grep '^Fuzz' || true); do
+              echo "::group::$pkg $fn"
+              go test -run='^$' -fuzz="^${fn}$" -fuzztime=20s "$pkg"
+              echo "::endgroup::"
+            done
+          done
+
       - name: Cache govulncheck binary
         id: govulncheck-cache
         uses: actions/cache@v4
@@ -83,6 +98,23 @@ jobs:
             go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           fi
           govulncheck ./...
+
+  dupe:
+    name: Duplication (jscpd <= 3%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache npm (jscpd)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: jscpd-${{ runner.os }}-4.0.5
+
+      # Thresholds and ignores live in .jscpd.json so local `make dupe` and CI
+      # reach the same verdict.
+      - name: Copy-paste detection
+        run: npx -y jscpd@4.0.5 .
 
   spec:
     name: OpenAPI contract lint
