@@ -19,7 +19,7 @@ jobs:
     name: Secret guard (no committed env files)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Reject committed .env / .envrc
         run: |
           # Any tracked env file other than .env.example is a hard failure —
@@ -39,9 +39,9 @@ jobs:
     name: Quality gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -79,7 +79,7 @@ jobs:
 
       - name: Cache govulncheck binary
         id: govulncheck-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/bin/govulncheck
           key: govulncheck-${{ runner.os }}-v1.6.0-go1.27
@@ -95,10 +95,10 @@ jobs:
     name: Duplication (jscpd <= 3%)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache npm (jscpd)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: jscpd-${{ runner.os }}-4.0.5
@@ -112,10 +112,10 @@ jobs:
     name: OpenAPI contract lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache npm (spectral-cli)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: spectral-cli-${{ runner.os }}-6.16.3
