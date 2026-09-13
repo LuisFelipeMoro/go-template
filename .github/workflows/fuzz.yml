@@ -82,9 +82,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -108,7 +108,7 @@ jobs:
       # earlier one reached instead of starting cold. Restoring an older key is
       # expected — the corpus only ever grows.
       - name: Cache fuzz corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build/fuzz
           key: fuzz-corpus-${{ runner.os }}-${{ github.run_id }}
@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload crashers
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashers
           path: "**/testdata/fuzz/**"
