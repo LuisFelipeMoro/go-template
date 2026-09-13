@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ import (
 	"github.com/luisfelipecoelho/go-template/internal/lifecycle"
 	"github.com/luisfelipecoelho/go-template/internal/messaging"
 	"github.com/luisfelipecoelho/go-template/internal/middleware"
+	"github.com/luisfelipecoelho/go-template/internal/profiling"
 	"github.com/luisfelipecoelho/go-template/internal/telemetry"
 	"github.com/luisfelipecoelho/go-template/internal/web"
 )
@@ -59,48 +61,117 @@ func runServer(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("building http metrics: %w", err)
 	}
 
-	// Wiring: explicit constructor DI. The store is the in-memory default;
-	// a cache (Redis/in-memory) fronts it when CACHE_DRIVER is set — it sits
-	// alongside the database, so both run at once. "none" skips the decorator
-	// entirely (zero overhead).
-	var storer item.Storer = adapters.NewDatabase()
-	// Stays a no-op unless a cache driver is configured, so the lifecycle
-	// component below can call Close unconditionally.
-	var cacheCloser io.Closer = noopCloser{}
-	if cfg.Cache.Driver != "" && cfg.Cache.Driver != "none" {
-		c, closer, cErr := cache.New(ctx, cache.Config{
-			Driver: cfg.Cache.Driver,
-			Redis: cache.RedisConfig{
-				Addr:     cfg.Cache.RedisAddr,
-				Password: cfg.Cache.RedisPassword,
-				DB:       cfg.Cache.RedisDB,
-				TLS:      cfg.Cache.RedisTLS,
-			},
-		})
-		if cErr != nil {
-			return fmt.Errorf("building cache: %w", cErr)
-		}
-		cacheCloser = closer
-		storer = adapters.NewCache(storer, c, cfg.Cache.TTL, log)
+	storer, cacheCloser, err := buildStorer(ctx, cfg, log)
+	if err != nil {
+		return err
 	}
+
 	publisher, _, busCloser, err := messaging.New(cfg.Messaging.Driver)
 	if err != nil {
 		return fmt.Errorf("building messaging: %w", err)
 	}
-	svc := item.NewService(log, storer, adapters.NewPublisher(publisher, eventsTopic))
-	ready := web.NewReadiness()
 
-	// The /v1 middleware chain, assembled here in order — the server applies it
-	// verbatim and never hardcodes a middleware (see internal/middleware).
-	// requestID first so the id reaches every layer; telemetry high so it
-	// observes 401/503/recovered-500 below it; throttle and auth reject before
-	// the handlers; bodyLimit last, just before the routes.
+	svc := item.NewService(log, storer, adapters.NewPublisher(publisher, eventsTopic))
+
+	chain, err := buildMiddleware(cfg, log, httpMetrics, tel)
+	if err != nil {
+		return err
+	}
+
+	server := buildHTTPServer(cfg, log, web.NewReadiness(), chain, svc)
+
+	runner := lifecycle.NewRunner(log, cfg.ShutdownTimeout)
+	registerServerComponents(runner, cfg, tel, server, busCloser, cacheCloser)
+
+	if err := runner.Run(ctx); err != nil {
+		return fmt.Errorf("running server lifecycle: %w", err)
+	}
+	return nil
+}
+
+// buildHTTPServer translates the HTTP config into the transport and mounts the
+// routes. The kernel is domain-agnostic: each bounded context's HTTP adapter
+// registers its own routes onto the /v1 group, so adding a context means
+// constructing its service and passing its handler here — the server never
+// learns item internals.
+func buildHTTPServer(
+	cfg config.Config,
+	log *slog.Logger,
+	ready *web.Readiness,
+	chain []gin.HandlerFunc,
+	svc *item.Service,
+) *web.Server {
+	return web.NewServer(web.Config{
+		Port:              cfg.HTTPPort,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
+		Env:               cfg.Env,
+		Version:           version,
+	}, log, ready,
+		web.WithGroupMiddleware(chain...),
+		web.WithRoutes(itemhttp.NewHandler(svc)),
+	)
+}
+
+// buildStorer constructs the item store and, when a cache driver is configured,
+// the read-through decorator in front of it. The cache sits ALONGSIDE the
+// store — it never replaces it — and CACHE_DRIVER=none skips the decorator
+// entirely, so the disabled path costs nothing.
+//
+// The returned Closer is always non-nil so the caller's lifecycle component can
+// call Close unconditionally; with no cache it is a no-op.
+func buildStorer(ctx context.Context, cfg config.Config, log *slog.Logger) (item.Storer, io.Closer, error) {
+	var storer item.Storer = adapters.NewDatabase()
+
+	if cfg.Cache.Driver == "" || cfg.Cache.Driver == "none" {
+		return storer, noopCloser{}, nil
+	}
+
+	c, closer, err := cache.New(ctx, cache.Config{
+		Driver: cfg.Cache.Driver,
+		Redis: cache.RedisConfig{
+			Addr:     cfg.Cache.RedisAddr,
+			Password: cfg.Cache.RedisPassword,
+			DB:       cfg.Cache.RedisDB,
+			TLS:      cfg.Cache.RedisTLS,
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("building cache: %w", err)
+	}
+	return adapters.NewCache(storer, c, cfg.Cache.TTL, log), closer, nil
+}
+
+// buildMiddleware assembles the /v1 chain. Order is load-bearing and decided
+// here, in one place: the server applies the slice verbatim and never hardcodes
+// a middleware of its own.
+//
+//	RequestID        first, so the correlation id reaches every layer below
+//	SecurityHeaders  applies to every response, including the rejections below
+//	Telemetry        high, so it observes 401/429/503 and recovered 500s
+//	Recovery         converts a panic into a 500 the layers above can see
+//	Throttle         sheds load before any handler work is done
+//	otelgin          traces what survived admission control
+//	Auth             rejects before the handler deadline starts
+//	Timeout          after auth/throttle so rejected requests are not charged
+//	                 against it, before BodyLimit so it also covers decoding
+//	BodyLimit        last, immediately in front of the routes
+func buildMiddleware(
+	cfg config.Config,
+	log *slog.Logger,
+	httpMetrics *telemetry.HTTPMetrics,
+	tel *telemetry.Providers,
+) ([]gin.HandlerFunc, error) {
 	chain := []gin.HandlerFunc{
 		middleware.RequestID(),
 		middleware.SecurityHeaders(),
 		middleware.Telemetry(log, httpMetrics),
 		middleware.Recovery(log),
 	}
+
 	if cfg.Throttle.Enabled {
 		chain = append(chain, middleware.Throttle(middleware.NewSemaphore(cfg.Throttle.MaxInFlight)))
 	}
@@ -112,53 +183,56 @@ func runServer(ctx context.Context, cfg config.Config) error {
 	if cfg.Auth.Enabled {
 		authr, err := auth.NewStaticKeys(cfg.Auth.APIKeys...)
 		if err != nil {
-			return fmt.Errorf("building authenticator: %w", err)
+			return nil, fmt.Errorf("building authenticator: %w", err)
 		}
 		chain = append(chain, middleware.Auth(authr))
 	}
-	// Timeout precedes bodyLimit so the deadline also covers request decoding,
-	// and follows auth/throttle so rejected requests are never charged against it.
-	chain = append(chain,
+
+	return append(chain,
 		middleware.Timeout(cfg.HandlerTimeout),
 		middleware.BodyLimit(cfg.MaxBodyBytes),
-	)
+	), nil
+}
 
-	// The kernel is domain-agnostic: each bounded context's HTTP adapter
-	// registers its own routes onto the /v1 group. Add a context = construct its
-	// service and pass its handler here — the server never learns item internals.
-	opts := []web.Option{
-		web.WithGroupMiddleware(chain...),
-		web.WithRoutes(itemhttp.NewHandler(svc)),
+// registerServerComponents wires the lifecycle graph. Registration order is
+// start order and the REVERSE of stop order, which is the only thing that makes
+// the shutdown sequence correct — read it bottom-up to see the drain:
+//
+//	http drains in-flight requests → cache closes → bus closes → telemetry
+//	flushes → pprof (if enabled) finally goes away.
+func registerServerComponents(
+	runner *lifecycle.Runner,
+	cfg config.Config,
+	tel *telemetry.Providers,
+	server *web.Server,
+	busCloser, cacheCloser io.Closer,
+) {
+	// Registered first → stopped last. A hung shutdown is exactly when a
+	// goroutine dump is worth having, so the profiling listener outlives every
+	// component it might be used to diagnose. It exists only when PPROF_ENABLED
+	// is set, is never mounted on the API mux, and config.Load refuses a
+	// non-loopback bind in production.
+	if cfg.Pprof.Enabled {
+		pp := profiling.New(cfg.Pprof.Addr)
+		runner.Add(lifecycle.Component{Name: "pprof", Start: pp.Start, Stop: pp.Stop})
 	}
-
-	server := web.NewServer(web.Config{
-		Port:         cfg.HTTPPort,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
-		Env:          cfg.Env,
-		Version:      version,
-	}, log, ready, opts...)
-
-	runner := lifecycle.NewRunner(log, cfg.ShutdownTimeout)
-	// Registered first → stopped last: flush telemetry after everything drained.
+	// Flush telemetry after everything it might still be recording has drained.
 	runner.Add(lifecycle.Component{
 		Name:  "telemetry",
-		Start: func(context.Context) error { return nil },
+		Start: noStart,
 		Stop:  tel.Shutdown,
 	})
-	// Bus is a stop-only resource; Close unblocks any consumer and is done
-	// before telemetry flush but after the HTTP server drains.
+	// Bus is a stop-only resource; Close unblocks any consumer, after the HTTP
+	// server has drained but before the telemetry flush.
 	runner.Add(lifecycle.Component{
 		Name:  "bus",
-		Start: func(context.Context) error { return nil },
+		Start: noStart,
 		Stop:  func(context.Context) error { return busCloser.Close() },
 	})
-	// Cache connection (no-op unless a driver is configured); closed after the
-	// HTTP server drains so in-flight requests keep their cache.
+	// Closed after the HTTP server drains so in-flight requests keep their cache.
 	runner.Add(lifecycle.Component{
 		Name:  "cache",
-		Start: func(context.Context) error { return nil },
+		Start: noStart,
 		Stop:  func(context.Context) error { return cacheCloser.Close() },
 	})
 	runner.Add(lifecycle.Component{
@@ -166,9 +240,8 @@ func runServer(ctx context.Context, cfg config.Config) error {
 		Start: server.Start,
 		Stop:  server.Stop,
 	})
-
-	if err := runner.Run(ctx); err != nil {
-		return fmt.Errorf("running server lifecycle: %w", err)
-	}
-	return nil
 }
+
+// noStart is the Start of a stop-only component: it owns a resource to release
+// on shutdown but has no work of its own to run.
+func noStart(context.Context) error { return nil }

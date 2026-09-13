@@ -13,6 +13,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -27,11 +28,20 @@ func getenv(key string) string {
 // Config holds every runtime knob for the application. The zero value is not
 // intended for use; construct it via Load.
 type Config struct {
-	Env             string        // APP_ENV: dev|prod (default dev)
-	HTTPPort        int           // HTTP_PORT (default 8080, 1..65535)
-	ReadTimeout     time.Duration // HTTP_READ_TIMEOUT (default 5s)
-	WriteTimeout    time.Duration // HTTP_WRITE_TIMEOUT (default 10s)
-	IdleTimeout     time.Duration // HTTP_IDLE_TIMEOUT (default 60s)
+	Env         string        // APP_ENV: dev|prod (default dev)
+	HTTPPort    int           // HTTP_PORT (default 8080, 1..65535)
+	ReadTimeout time.Duration // HTTP_READ_TIMEOUT (default 5s)
+	// ReadHeaderTimeout (HTTP_READ_HEADER_TIMEOUT, default 2s) bounds the header
+	// read on its own. ReadTimeout already covers headers today, but it is the
+	// knob an operator raises to accept slow bodies — and raising it would
+	// silently reopen Slowloris if the header read had no bound of its own.
+	ReadHeaderTimeout time.Duration
+	WriteTimeout      time.Duration // HTTP_WRITE_TIMEOUT (default 10s)
+	IdleTimeout       time.Duration // HTTP_IDLE_TIMEOUT (default 60s)
+	// MaxHeaderBytes (HTTP_MAX_HEADER_BYTES, default 1 MiB, >0) caps the request
+	// header size. net/http applies its own 1 MiB default, so this makes the
+	// bound explicit and tunable rather than inherited.
+	MaxHeaderBytes  int
 	HandlerTimeout  time.Duration // HTTP_HANDLER_TIMEOUT (default 8s; keep below HTTP_WRITE_TIMEOUT)
 	ShutdownTimeout time.Duration // SHUTDOWN_TIMEOUT (default 20s)
 	LogLevel        string        // LOG_LEVEL: debug|info|warn|error (default error — errors-only logging policy; non-error signals are metrics)
@@ -41,6 +51,21 @@ type Config struct {
 	Auth            AuthConfig
 	Throttle        ThrottleConfig
 	Otel            OtelConfig
+	Pprof           PprofConfig
+}
+
+// PprofConfig controls the runtime profiling listener (net/http/pprof).
+//
+// Security: the pprof surface exposes heap contents, goroutine stacks, and the
+// process command line — it is an information-disclosure endpoint, not a
+// diagnostic nicety. It is therefore OFF by default, is never mounted on the
+// public API mux, and binds loopback so reaching it requires already being
+// inside the container (`kubectl port-forward`). Load refuses a non-loopback
+// bind when APP_ENV=prod for the same reason the auth guard exists: a debug
+// default must not quietly become a production posture.
+type PprofConfig struct {
+	Enabled bool   // PPROF_ENABLED (default false)
+	Addr    string // PPROF_ADDR (default 127.0.0.1:6060) — host:port, loopback in prod
 }
 
 // CacheConfig selects a read-through cache that fronts the storage adapter — it
@@ -115,41 +140,23 @@ func load(get func(string) string) (Config, error) {
 	p := parser{get: get}
 
 	cfg := Config{
-		Env:             p.enum("APP_ENV", "dev", "dev", "prod"),
-		HTTPPort:        p.intRange("HTTP_PORT", 8080, 1, 65535),
-		ReadTimeout:     p.duration("HTTP_READ_TIMEOUT", 5*time.Second),
-		WriteTimeout:    p.duration("HTTP_WRITE_TIMEOUT", 10*time.Second),
-		IdleTimeout:     p.duration("HTTP_IDLE_TIMEOUT", 60*time.Second),
-		HandlerTimeout:  p.duration("HTTP_HANDLER_TIMEOUT", 8*time.Second),
-		ShutdownTimeout: p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
-		LogLevel:        p.enum("LOG_LEVEL", "error", "debug", "info", "warn", "error"),
-		MaxBodyBytes:    p.int64Min("MAX_BODY_BYTES", 1048576, 1),
-		// Driver names are validated by their factory (internal/messaging.New), so
-		// adding an adapter is a single-package change.
-		Cache: CacheConfig{
-			Driver:        p.str("CACHE_DRIVER", "none"),
-			TTL:           p.duration("CACHE_TTL", 5*time.Minute),
-			RedisAddr:     p.str("CACHE_REDIS_ADDR", "localhost:6379"),
-			RedisPassword: p.str("CACHE_REDIS_PASSWORD", ""),
-			RedisDB:       p.intRange("CACHE_REDIS_DB", 0, 0, 15),
-			RedisTLS:      p.boolean("CACHE_REDIS_TLS", false),
-		},
-		Messaging: MessagingConfig{Driver: p.str("MESSAGING_DRIVER", "memory")},
-		Auth: AuthConfig{
-			Enabled:             p.boolean("AUTH_ENABLED", false),
-			APIKeys:             p.csv("AUTH_API_KEYS"),
-			AllowInsecureNoAuth: p.boolean("AUTH_ALLOW_INSECURE_NO_AUTH", false),
-		},
-		Throttle: ThrottleConfig{
-			Enabled:     p.boolean("THROTTLE_ENABLED", false),
-			MaxInFlight: p.intRange("THROTTLE_MAX_INFLIGHT", 256, 1, 1_000_000),
-		},
-		Otel: OtelConfig{
-			Enabled:     p.boolean("OTEL_ENABLED", false),
-			Endpoint:    p.str("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
-			ServiceName: p.str("OTEL_SERVICE_NAME", "go-template"),
-			SampleRatio: p.ratio("OTEL_SAMPLE_RATIO", 1.0),
-		},
+		Env:               p.enum("APP_ENV", "dev", "dev", "prod"),
+		HTTPPort:          p.intRange("HTTP_PORT", 8080, 1, 65535),
+		ReadTimeout:       p.duration("HTTP_READ_TIMEOUT", 5*time.Second),
+		ReadHeaderTimeout: p.duration("HTTP_READ_HEADER_TIMEOUT", 2*time.Second),
+		WriteTimeout:      p.duration("HTTP_WRITE_TIMEOUT", 10*time.Second),
+		IdleTimeout:       p.duration("HTTP_IDLE_TIMEOUT", 60*time.Second),
+		HandlerTimeout:    p.duration("HTTP_HANDLER_TIMEOUT", 8*time.Second),
+		ShutdownTimeout:   p.duration("SHUTDOWN_TIMEOUT", 20*time.Second),
+		LogLevel:          p.enum("LOG_LEVEL", "error", "debug", "info", "warn", "error"),
+		MaxHeaderBytes:    p.intRange("HTTP_MAX_HEADER_BYTES", 1048576, 1, 1<<30),
+		MaxBodyBytes:      p.int64Min("MAX_BODY_BYTES", 1048576, 1),
+		Cache:             loadCache(&p),
+		Messaging:         loadMessaging(&p),
+		Auth:              loadAuth(&p),
+		Throttle:          loadThrottle(&p),
+		Otel:              loadOtel(&p),
+		Pprof:             loadPprof(&p),
 	}
 
 	if p.err != nil {
@@ -159,6 +166,57 @@ func load(get func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// The per-section loaders below all share the one parser, so the "errors are
+// values" accumulation still holds across every field: the single error check
+// stays in load. Driver names are validated by their own factory (e.g.
+// internal/messaging.New), so adding an adapter remains a one-package change.
+
+func loadCache(p *parser) CacheConfig {
+	return CacheConfig{
+		Driver:        p.str("CACHE_DRIVER", "none"),
+		TTL:           p.duration("CACHE_TTL", 5*time.Minute),
+		RedisAddr:     p.str("CACHE_REDIS_ADDR", "localhost:6379"),
+		RedisPassword: p.str("CACHE_REDIS_PASSWORD", ""),
+		RedisDB:       p.intRange("CACHE_REDIS_DB", 0, 0, 15),
+		RedisTLS:      p.boolean("CACHE_REDIS_TLS", false),
+	}
+}
+
+func loadMessaging(p *parser) MessagingConfig {
+	return MessagingConfig{Driver: p.str("MESSAGING_DRIVER", "memory")}
+}
+
+func loadAuth(p *parser) AuthConfig {
+	return AuthConfig{
+		Enabled:             p.boolean("AUTH_ENABLED", false),
+		APIKeys:             p.csv("AUTH_API_KEYS"),
+		AllowInsecureNoAuth: p.boolean("AUTH_ALLOW_INSECURE_NO_AUTH", false),
+	}
+}
+
+func loadThrottle(p *parser) ThrottleConfig {
+	return ThrottleConfig{
+		Enabled:     p.boolean("THROTTLE_ENABLED", false),
+		MaxInFlight: p.intRange("THROTTLE_MAX_INFLIGHT", 256, 1, 1_000_000),
+	}
+}
+
+func loadOtel(p *parser) OtelConfig {
+	return OtelConfig{
+		Enabled:     p.boolean("OTEL_ENABLED", false),
+		Endpoint:    p.str("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		ServiceName: p.str("OTEL_SERVICE_NAME", "go-template"),
+		SampleRatio: p.ratio("OTEL_SAMPLE_RATIO", 1.0),
+	}
+}
+
+func loadPprof(p *parser) PprofConfig {
+	return PprofConfig{
+		Enabled: p.boolean("PPROF_ENABLED", false),
+		Addr:    p.str("PPROF_ADDR", "127.0.0.1:6060"),
+	}
 }
 
 // validate enforces the cross-field rules that no single parser can see,
@@ -175,7 +233,47 @@ func (c Config) validate() error {
 				"set AUTH_ENABLED=true and provide AUTH_API_KEYS, or set " +
 				"AUTH_ALLOW_INSECURE_NO_AUTH=true if authentication is enforced by a gateway or service mesh")
 	}
+
+	// The profiling listener is an information-disclosure surface (heap
+	// contents, goroutine stacks, argv). Binding it anywhere reachable is only
+	// ever a debugging shortcut, so it is rejected outright in production
+	// rather than left to a network policy nobody audits.
+	if c.Pprof.Enabled {
+		loopback, err := isLoopbackAddr(c.Pprof.Addr)
+		if err != nil {
+			return fmt.Errorf("config PPROF_ADDR: %w", err)
+		}
+		if c.Env == "prod" && !loopback {
+			return fmt.Errorf(
+				"config: PPROF_ENABLED=true with PPROF_ADDR=%q exposes heap and goroutine "+
+					"state off-host; bind loopback (127.0.0.1:6060) and reach it with "+
+					"`kubectl port-forward`, or set PPROF_ENABLED=false", c.Pprof.Addr)
+		}
+	}
 	return nil
+}
+
+// isLoopbackAddr reports whether a host:port address binds only the loopback
+// interface. An empty or unspecified host (":6060", "0.0.0.0:6060", "[::]:6060")
+// binds every interface and is therefore not loopback.
+func isLoopbackAddr(addr string) (bool, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false, fmt.Errorf("%q is not a valid host:port address: %w", addr, err)
+	}
+	if host == "" {
+		return false, nil
+	}
+	if host == "localhost" {
+		return true, nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// A name other than localhost resolves at dial time to something this
+		// process cannot vouch for — treat it as non-loopback.
+		return false, nil
+	}
+	return ip.IsLoopback(), nil
 }
 
 // parser reads and validates environment values, holding the first error so the

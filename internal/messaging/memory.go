@@ -18,6 +18,10 @@ var ErrClosed = errors.New("bus closed")
 // Memory is an in-process Publisher + Consumer for local development and
 // tests. One queue per topic; multiple consumers on the same topic compete for
 // messages (like a shared queue, not fan-out).
+//
+// The zero value is unusable: topics is a nil map and closed is a nil channel,
+// so a publish would panic and a close would block forever. Construct via
+// NewMemory.
 type Memory struct {
 	mu     sync.Mutex
 	topics map[string]chan Message

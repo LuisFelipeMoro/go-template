@@ -60,7 +60,7 @@ outside it.
 │   (env config · bearer auth · gin middleware chain)                │
 ├──────────────────────────────────────────────────────────────────┤
 │ internal/web, web/client, cache, messaging, telemetry, logger,     │
-│ lifecycle, worker   template-specific infrastructure kernel       │
+│ lifecycle, worker, profiling   template-specific infra kernel     │
 │   (imports nothing above it)                                      │
 ├──────────────────────────────────────────────────────────────────┤
 │ pkg/uid, pkg/resilience   zero-dependency generic libraries        │
@@ -253,6 +253,34 @@ The practical consequence worth internalizing: a 401 produces no log line. It is
 visible as a `status` attribute on the request counter, and that metric is what
 you alert on. If you find yourself wanting an info log to answer an operational
 question, the answer is almost always a metric dimension instead.
+
+### Profiling
+
+`internal/profiling` serves `net/http/pprof` on a listener of its own,
+constructed only when `PPROF_ENABLED=true`. It is never mounted on the gin
+engine, so enabling it changes no route, middleware, or metric on the API.
+
+The security control is reachability, not authentication: pprof discloses heap
+contents, goroutine stacks, and the process command line, so `PPROF_ADDR`
+defaults to `127.0.0.1:6060` and `config.Load` **refuses to start** a `prod`
+process that binds it anywhere else. The intended workflow is therefore:
+
+```
+kubectl port-forward deploy/go-template 6060:6060
+go tool pprof -http=:8080 http://localhost:6060/debug/pprof/heap
+go tool pprof -http=:8080 'http://localhost:6060/debug/pprof/profile?seconds=30'
+```
+
+It registers as the **first** lifecycle component, so it stops **last** — a
+shutdown that hangs is exactly when a goroutine dump is worth having, and the
+profiling listener outlives every component it might be used to diagnose.
+
+One constraint follows from importing `net/http/pprof`: its `init` registers the
+profile handlers on `http.DefaultServeMux`, which no import style prevents. No
+server in this module may be given a nil handler (`http.ListenAndServe(addr,
+nil)`), because that serves the default mux and would publish profiling on
+whatever port it binds. Every server here passes an explicit `Handler`, and
+`internal/profiling`'s test pins that.
 
 ---
 

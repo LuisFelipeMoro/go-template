@@ -106,3 +106,30 @@ func TestStartStop_GracefulDrain(t *testing.T) {
 		t.Fatal("Start did not return after Stop")
 	}
 }
+
+// The header bounds are the Slowloris and header-bomb controls. They live in
+// Config, so the only thing that can break them silently is the server failing
+// to copy them onto http.Server — which no request-level test would notice,
+// because net/http enforces them below the handler.
+func TestNewServer_AppliesHeaderLimits(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer(Config{
+		Port:              0,
+		ReadTimeout:       7 * time.Second,
+		ReadHeaderTimeout: 3 * time.Second,
+		WriteTimeout:      11 * time.Second,
+		IdleTimeout:       42 * time.Second,
+		MaxHeaderBytes:    4096,
+		Env:               "prod",
+		Version:           "test",
+	}, discardLogger(), NewReadiness())
+
+	assert.Equal(t, 7*time.Second, s.http.ReadTimeout)
+	assert.Equal(t, 3*time.Second, s.http.ReadHeaderTimeout,
+		"header read must be bounded independently of ReadTimeout")
+	assert.Equal(t, 11*time.Second, s.http.WriteTimeout)
+	assert.Equal(t, 42*time.Second, s.http.IdleTimeout)
+	assert.Equal(t, 4096, s.http.MaxHeaderBytes,
+		"an unset MaxHeaderBytes silently inherits net/http's default instead of the configured cap")
+}

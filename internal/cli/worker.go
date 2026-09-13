@@ -4,6 +4,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -60,36 +61,60 @@ func runWorker(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("building bus: %w", err)
 	}
-	// The message handler is injected here (composition root) so internal/worker
-	// stays domain-agnostic. Extend it to dispatch on evt.Type.
-	handler := func(_ context.Context, msg messaging.Message) error {
-		var evt item.Event
-		if err := jsonv2.Unmarshal(msg.Payload, &evt); err != nil {
-			return fmt.Errorf("decoding event: %w", err)
-		}
-		return nil
-	}
-	w := worker.New(log, consumer, eventsTopic, perMessageTimeout, workerMetrics, handler)
+
+	w := worker.New(log, consumer, eventsTopic, perMessageTimeout, workerMetrics, newEventHandler())
 
 	runner := lifecycle.NewRunner(log, cfg.ShutdownTimeout)
-	runner.Add(lifecycle.Component{
-		Name:  "telemetry",
-		Start: func(context.Context) error { return nil },
-		Stop:  tel.Shutdown,
-	})
-	runner.Add(lifecycle.Component{
-		Name:  "bus",
-		Start: func(context.Context) error { return nil },
-		Stop:  func(context.Context) error { return busCloser.Close() },
-	})
-	runner.Add(lifecycle.Component{
-		Name:  "worker",
-		Start: w.Run,
-		Stop:  func(context.Context) error { return nil }, // ctx cancel + bus close drain it
-	})
+	registerWorkerComponents(runner, tel, w, busCloser)
 
 	if err := runner.Run(ctx); err != nil {
 		return fmt.Errorf("running worker lifecycle: %w", err)
 	}
 	return nil
 }
+
+// newEventHandler builds the message handler. It is injected at the composition
+// root so internal/worker stays domain-agnostic — the worker package owns the
+// timeout and recovery loop, never the decoding or the dispatch.
+//
+// The template decodes and stops there: extend the switch on evt.Type to
+// dispatch to a domain service.
+func newEventHandler() worker.Handler {
+	return func(_ context.Context, msg messaging.Message) error {
+		var evt item.Event
+		if err := jsonv2.Unmarshal(msg.Payload, &evt); err != nil {
+			return fmt.Errorf("decoding event: %w", err)
+		}
+		return nil
+	}
+}
+
+// registerWorkerComponents wires the lifecycle graph. Registration order is
+// start order and the REVERSE of stop order, mirroring the server: the worker
+// drains first, then the bus closes, and telemetry flushes last.
+func registerWorkerComponents(
+	runner *lifecycle.Runner,
+	tel *telemetry.Providers,
+	w *worker.Worker,
+	busCloser io.Closer,
+) {
+	runner.Add(lifecycle.Component{
+		Name:  "telemetry",
+		Start: noStart,
+		Stop:  tel.Shutdown,
+	})
+	runner.Add(lifecycle.Component{
+		Name:  "bus",
+		Start: noStart,
+		Stop:  func(context.Context) error { return busCloser.Close() },
+	})
+	runner.Add(lifecycle.Component{
+		Name:  "worker",
+		Start: w.Run,
+		Stop:  noStop, // ctx cancel + bus close already drain it
+	})
+}
+
+// noStop is the Stop of a component that has nothing to release: cancelling the
+// run context is the whole of its shutdown.
+func noStop(context.Context) error { return nil }

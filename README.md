@@ -42,6 +42,7 @@ still recognize a year later. Everything below is wired, tested, and documented
 - **Resiliency** — context-aware retry (exponential backoff + jitter) and circuit breaker blueprints; per-request handler deadlines that actually cancel downstream work; graceful shutdown draining in-flight work on SIGTERM.
 - **Secure by default** — bearer auth that *fails closed* in prod, constant-time key comparison, strict JSON decoding, security headers, request body limits, distroless non-root image, and a `.golangci.yml` running `gosec`/`errorlint`/`bodyclose` in CI.
 - **Contract-first HTTP** — `api-spec.yaml` (OpenAPI 3.1) with Spectral linting; sample CRUD domain at `/v1/items`; `/healthz` + `/readyz` probes.
+- **Gates that can actually fail** — race detector, ≥85% coverage, `govulncheck` at zero, `jscpd` duplication ≤3%, goroutine-leak detection on every package that starts one, fuzz targets on every parser, and benchmarks with allocation counts. `make gates` runs the lot.
 - **Ship-ready packaging** — multi-stage Dockerfile (distroless, non-root, static), docker-compose with an OTel collector, and a Kustomize base wired for zero-downtime rollouts: server + worker Deployments, Service, HPA, PodDisruptionBudget, `preStop` drain hook, topology spread, and a hashed ConfigMap.
 
 ## Prerequisites
@@ -51,6 +52,58 @@ still recognize a year later. Everything below is wired, tested, and documented
 - Docker (+ Compose v2) — for the local stack
 - kubectl (with kustomize) — for deploys
 - `make tools` installs golangci-lint and govulncheck
+
+### Testing & gates
+
+```
+make test     # go test -race ./...
+make cover    # coverage, fails under 85%
+make lint     # gofmt + go vet + golangci-lint
+make dupe     # jscpd, fails above 3% duplication
+make vuln     # govulncheck, must be zero
+make gates    # all of the above, the same set CI enforces
+
+make bench                 # every benchmark, with allocs/op
+make fuzz                  # every fuzz target, 30s each
+make fuzz FUZZTIME=5m      # longer soak before a release
+```
+
+Four things here are not the Go default and are deliberate:
+
+- **Goroutine leaks fail tests.** Every package that starts a goroutine runs
+  `goleak.VerifyTestMain`. A goroutine that outlives its test is one that would
+  outlive a request or a shutdown in production.
+- **Parsers are fuzzed, not just table-tested.** `web.BindJSON`, `uid.Validate`
+  and the domain validators have fuzz targets asserting invariants that must
+  hold for *every* input — no panic, and acceptance implies the documented
+  bounds. Seed corpora are committed, so a crash found once becomes a permanent
+  regression test.
+- **Benchmarks report allocations.** `b.ReportAllocs()` everywhere: an
+  optimization that cuts time but adds allocations is usually a loss. Compare
+  runs with `benchstat`, never a single execution.
+- **Falsification over coverage.** Coverage is a floor, not a target. A test is
+  only kept once it has been observed to FAIL against a deliberately broken
+  version of the code it covers.
+
+### Vulnerability baseline
+
+`make vuln` must report **no vulnerabilities and exit 0** — that is a gate, not a
+report to skim. It scans by reachable symbol, so a finding means *this code*
+calls the vulnerable path.
+
+Two knobs fix findings, and which one depends on where the finding lives:
+
+| Finding in | Fix |
+|---|---|
+| the standard library | raise the `toolchain` directive in `go.mod` (currently `go1.26.6`) |
+| a dependency | `go get <module>@<fixed version> && go mod tidy` |
+
+One advisory is reported only under `govulncheck -show verbose` and can never be
+cleared: **GO-2026-5932**, which marks `golang.org/x/crypto/openpgp` as
+unmaintained (`Fixed in: N/A`). This template does not import that package — it
+requires `golang.org/x/crypto` transitively through gin's validator, for
+`sha3` — so the advisory is module-level and unreachable. It does not appear in
+the symbol scan and does not fail the gate.
 
 ## Quickstart
 
@@ -71,7 +124,7 @@ curl localhost:8080/v1/items
 Tests, lint, coverage (≥85% enforced):
 
 ```bash
-make test lint cover
+make gates
 ```
 
 ## Docker & Compose
@@ -180,9 +233,11 @@ you deploy anything are `AUTH_ENABLED` and `CACHE_REDIS_TLS`.
 |----------|---------|-------------|
 | `APP_ENV` | `dev` | `dev` or `prod` (gin mode) |
 | `HTTP_PORT` | `8080` | HTTP listen port |
-| `HTTP_READ_TIMEOUT` | `5s` | server read timeout |
+| `HTTP_READ_TIMEOUT` | `5s` | server read timeout (headers + body) |
+| `HTTP_READ_HEADER_TIMEOUT` | `2s` | header-read deadline on its own — the Slowloris bound that survives raising `HTTP_READ_TIMEOUT` for slow bodies |
 | `HTTP_WRITE_TIMEOUT` | `10s` | server write timeout |
 | `HTTP_IDLE_TIMEOUT` | `60s` | keep-alive idle timeout |
+| `HTTP_MAX_HEADER_BYTES` | `1048576` | request header cap (net/http's implicit 1 MiB, made explicit and tunable) |
 | `HTTP_HANDLER_TIMEOUT` | `8s` | per-request deadline on the handler context (cancels downstream work → 504); keep below `HTTP_WRITE_TIMEOUT` |
 | `SHUTDOWN_TIMEOUT` | `20s` | graceful-shutdown bound |
 | `LOG_LEVEL` | `error` | errors-only in prod; use `debug` locally |
@@ -198,6 +253,8 @@ you deploy anything are `AUTH_ENABLED` and `CACHE_REDIS_TLS`.
 | `AUTH_API_KEYS` | — | comma-separated bearer keys (**secret**; required when auth on) |
 | `THROTTLE_ENABLED` | `false` | per-instance in-flight concurrency cap (backpressure, not a rate limit) |
 | `THROTTLE_MAX_INFLIGHT` | `256` | max concurrent `/v1` requests when throttling |
+| `PPROF_ENABLED` | `false` | serve `net/http/pprof` on a private listener (**off by default — it exposes heap contents and goroutine stacks**) |
+| `PPROF_ADDR` | `127.0.0.1:6060` | profiling bind address. `APP_ENV=prod` refuses a non-loopback bind — reach it with `kubectl port-forward deploy/go-template 6060:6060` |
 | `AUTH_ALLOW_INSECURE_NO_AUTH` | `false` | opt out of the prod auth guard — only when a gateway/mesh enforces authn |
 | `OTEL_ENABLED` | `false` | enable traces + metrics export |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP gRPC endpoint |
@@ -370,6 +427,58 @@ documentado — e as partes que você não precisa podem ser removidas sem sobra
 - kubectl (com kustomize) — para deploys
 - `make tools` instala golangci-lint e govulncheck
 
+### Testes e gates
+
+```
+make test     # go test -race ./...
+make cover    # cobertura, reprova abaixo de 85%
+make lint     # gofmt + go vet + golangci-lint
+make dupe     # jscpd, reprova acima de 3% de duplicação
+make vuln     # govulncheck, tem que ser zero
+make gates    # tudo acima, o mesmo conjunto que o CI cobra
+
+make bench                 # todos os benchmarks, com allocs/op
+make fuzz                  # todos os alvos de fuzz, 30s cada
+make fuzz FUZZTIME=5m      # soak mais longo antes de uma release
+```
+
+Quatro pontos aqui não são o padrão do Go e são deliberados:
+
+- **Vazamento de goroutine reprova o teste.** Todo pacote que inicia goroutine
+  roda `goleak.VerifyTestMain`. Uma goroutine que sobrevive ao seu teste é uma
+  que sobreviveria a uma requisição ou a um shutdown em produção.
+- **Parsers são fuzzados, não só testados por tabela.** `web.BindJSON`,
+  `uid.Validate` e os validadores de domínio têm alvos de fuzz afirmando
+  invariantes que valem para *qualquer* entrada — sem panic, e aceitar implica
+  os limites documentados. Os corpora semente são commitados: um crash achado
+  uma vez vira teste de regressão permanente.
+- **Benchmarks reportam alocações.** `b.ReportAllocs()` em todos: uma otimização
+  que corta tempo mas adiciona alocações normalmente é prejuízo. Compare
+  execuções com `benchstat`, nunca uma corrida só.
+- **Falsificação acima de cobertura.** Cobertura é piso, não alvo. Um teste só
+  é mantido depois de observado FALHANDO contra uma versão deliberadamente
+  quebrada do código que ele cobre.
+
+### Baseline de vulnerabilidades
+
+`make vuln` deve reportar **nenhuma vulnerabilidade e sair com 0** — é um gate,
+não um relatório para folhear. A varredura é por símbolo alcançável: um achado
+significa que *este código* chama o caminho vulnerável.
+
+Dois botões resolvem um achado, e qual deles depende de onde ele está:
+
+| Achado em | Correção |
+|---|---|
+| biblioteca padrão | suba a diretiva `toolchain` no `go.mod` (hoje `go1.26.6`) |
+| dependência | `go get <módulo>@<versão corrigida> && go mod tidy` |
+
+Um aviso só aparece com `govulncheck -show verbose` e nunca pode ser zerado:
+**GO-2026-5932**, que marca `golang.org/x/crypto/openpgp` como não mantido
+(`Fixed in: N/A`). Este template não importa esse pacote — requer
+`golang.org/x/crypto` transitivamente via o validator do gin, por causa do
+`sha3` — então o aviso é de módulo e inalcançável. Não aparece na varredura por
+símbolo e não reprova o gate.
+
 ## Início rápido
 
 ```bash
@@ -389,7 +498,7 @@ curl localhost:8080/v1/items
 Testes, lint e cobertura (≥85% obrigatório):
 
 ```bash
-make test lint cover
+make gates
 ```
 
 ## Docker e Compose
@@ -494,9 +603,11 @@ de qualquer deploy são `AUTH_ENABLED` e `CACHE_REDIS_TLS`.
 |----------|--------|-----------|
 | `APP_ENV` | `dev` | `dev` ou `prod` (modo do gin) |
 | `HTTP_PORT` | `8080` | porta HTTP |
-| `HTTP_READ_TIMEOUT` | `5s` | timeout de leitura |
+| `HTTP_READ_TIMEOUT` | `5s` | timeout de leitura (cabeçalhos + corpo) |
+| `HTTP_READ_HEADER_TIMEOUT` | `2s` | deadline só da leitura de cabeçalhos — o limite anti-Slowloris que sobrevive a aumentar `HTTP_READ_TIMEOUT` para corpos lentos |
 | `HTTP_WRITE_TIMEOUT` | `10s` | timeout de escrita |
 | `HTTP_IDLE_TIMEOUT` | `60s` | timeout de keep-alive |
+| `HTTP_MAX_HEADER_BYTES` | `1048576` | limite dos cabeçalhos da requisição (o 1 MiB implícito do net/http, agora explícito e ajustável) |
 | `HTTP_HANDLER_TIMEOUT` | `8s` | deadline por requisição no contexto do handler (cancela o trabalho downstream → 504); mantenha abaixo de `HTTP_WRITE_TIMEOUT` |
 | `SHUTDOWN_TIMEOUT` | `20s` | limite do graceful shutdown |
 | `LOG_LEVEL` | `error` | somente erros em prod; use `debug` localmente |
@@ -512,6 +623,8 @@ de qualquer deploy são `AUTH_ENABLED` e `CACHE_REDIS_TLS`.
 | `AUTH_API_KEYS` | — | chaves bearer separadas por vírgula (**segredo**; obrigatório com auth on) |
 | `THROTTLE_ENABLED` | `false` | limite de concorrência por instância (backpressure, não rate limit) |
 | `THROTTLE_MAX_INFLIGHT` | `256` | máximo de requisições `/v1` concorrentes ao throttle |
+| `PPROF_ENABLED` | `false` | serve `net/http/pprof` num listener privado (**desligado por padrão — expõe conteúdo de heap e stacks de goroutines**) |
+| `PPROF_ADDR` | `127.0.0.1:6060` | endereço do profiling. `APP_ENV=prod` recusa bind fora de loopback — acesse com `kubectl port-forward deploy/go-template 6060:6060` |
 | `AUTH_ALLOW_INSECURE_NO_AUTH` | `false` | desativa a trava de auth em prod — só quando um gateway/mesh garante a autenticação |
 | `OTEL_ENABLED` | `false` | habilita exportação de traces + métricas |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | endpoint OTLP gRPC |
