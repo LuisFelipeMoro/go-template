@@ -4,9 +4,11 @@ Guidance for Claude Code when working in this repository.
 
 ## Commands
 
-> **json/v2 (Go 1.26):** the code uses `encoding/json/v2` + `jsontext`, which are
-> behind `GOEXPERIMENT=jsonv2`. The Makefile/Dockerfile/CI set it; for ad-hoc
-> `go` commands, export `GOEXPERIMENT=jsonv2` (already set in this repo's go env).
+> **json/v2:** the code uses `encoding/json/v2`, which is stable as of Go 1.27
+> and needs no build flag. It does require the `go` directive in `go.mod` to be
+> `1.27.0` or later — under an older directive the compiler rejects
+> `json.UnmarshalRead` with "requires go1.27 or later", which is why the
+> directive and the `toolchain` line move together.
 
 | Task | Command |
 |------|---------|
@@ -135,13 +137,13 @@ Change prod config = edit the `configMapGenerator` literals in `overlays/prod/ku
 
 ## Quality Gates (all must pass before any handoff)
 
-`gofmt` clean · `go vet` clean · `golangci-lint run` 0 errors · `go test -race ./...` green · coverage ≥85% (`make cover`) · `govulncheck` clean · `make spec-lint` 0 errors when touching HTTP. All `go` invocations need `GOEXPERIMENT=jsonv2` (Makefile/CI/Docker set it).
+`gofmt` clean · `go vet` clean · `golangci-lint run` 0 errors · `go test -race ./...` green · coverage ≥85% (`make cover`) · `govulncheck` clean · `make spec-lint` 0 errors when touching HTTP.
 
 Lint rules live in `.golangci.yml` — it enables the linters that enforce this
 file's stated rules (`gosec`, `errorlint`, `nilerr`, `noctx`, `bodyclose`,
 `revive`, `gocritic`, …), which the default linter set does NOT cover. Tool
 versions are pinned in the Makefile and must match `.github/workflows/ci.yml`.
 
-Run `make tools` once to install `golangci-lint` + `govulncheck` (not vendored). `go.mod` pins `toolchain go1.26.4` — the `go` command auto-downloads it. `encoding/json/v2` is behind `GOEXPERIMENT=jsonv2`; remove that flag once json/v2 graduates to the default.
+Run `make tools` once to install `golangci-lint` + `govulncheck` (not vendored). `go.mod` pins `toolchain go1.27.1` — the `go` command auto-downloads it. `encoding/json/v2` is stable from Go 1.27 and needs no build flag, but it does require the `go` directive to be `1.27.0`+.
 
 CI (`.github/workflows/ci.yml`) enforces all of this on every push/PR — a **secret guard** (fails on any committed `.env`/`.envrc`), the Go gates (fmt, vet, golangci-lint, `-race` + ≥85% coverage, govulncheck), and Spectral spec lint. The guard is server-side, so it holds even if a contributor skipped `make hooks`.

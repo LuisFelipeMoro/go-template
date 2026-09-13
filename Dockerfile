@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # --- Build stage -------------------------------------------------------------
-# The minor tag floats to the newest 1.26.x, so a rebuild always picks up
+# The minor tag floats to the newest 1.27.x, so a rebuild always picks up
 # stdlib security fixes. It can never float DOWN past the floor: go.mod's
 # `toolchain` directive pins the minimum patch release and the go command
 # fetches it if the base image is older. Raise that directive, not this tag,
-# when govulncheck reports a stdlib finding.
+# when govulncheck reports a stdlib finding — and keep this tag's minor version
+# in step with the `go` directive, which json/v2 requires to be 1.27.0+.
 FROM golang:1.27 AS builder
 
 WORKDIR /src
@@ -20,8 +21,6 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_TIME=unknown
 
-# json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26.
-ENV GOEXPERIMENT=jsonv2
 
 # Static binary: distroless/static has no libc.
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
