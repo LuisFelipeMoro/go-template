@@ -6,7 +6,7 @@
 # `toolchain` directive pins the minimum patch release and the go command
 # fetches it if the base image is older. Raise that directive, not this tag,
 # when govulncheck reports a stdlib finding.
-FROM golang:1.26 AS builder
+FROM golang:1.27 AS builder
 
 WORKDIR /src
 
