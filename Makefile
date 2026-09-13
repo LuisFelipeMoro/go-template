@@ -61,9 +61,11 @@ fuzz: ## Fuzz each target for $(FUZZTIME) (override: make fuzz FUZZTIME=5m)
 	@# becomes a permanent regression test.
 	@#
 	@# `make test` already replays those seeds, which is what gates every PR.
-	@# This target is the SEARCH for new inputs — minutes per run, so CI only
-	@# does it nightly, on demand, or behind the `fuzz` PR label
-	@# (.github/workflows/fuzz.yml). Run it locally after touching a parser.
+	@# This target is the SEARCH for new inputs — minutes per run. In CI it is
+	@# on demand, behind the `fuzz` PR label, or on a weekly schedule that
+	@# ships DISABLED (set the FUZZ_SCHEDULE repo variable to enable; see
+	@# .github/workflows/fuzz.yml for the cost baseline). Run it locally after
+	@# touching a parser.
 	@set -e; for pkg in $$(go list ./cmd/... ./internal/... ./pkg/...); do \
 		for fn in $$(go test -list='^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz' || true); do \
 			echo "==> $$pkg $$fn"; \

@@ -1,23 +1,52 @@
 name: Fuzz
 
-# Generative fuzzing is opt-in, deliberately not part of the PR pipeline.
+# Generative fuzzing — deliberately NOT part of the PR pipeline, and its
+# schedule ships DISABLED.
 #
-# The reasoning: seed corpora (every f.Add case, plus anything committed under
-# testdata/fuzz/ after a crash) are replayed by the ordinary `go test` run in
-# ci.yml. So a regression against a known-bad input still fails every PR. What
-# runs here is the SEARCH for new inputs, which costs minutes per run and is far
-# more productive as one long nightly soak than as a 20-second slice bolted onto
-# every push.
+# What still gates every PR: `go test` in ci.yml replays every fuzz SEED (each
+# f.Add case, plus any crasher committed under testdata/fuzz/). A regression
+# against a known-bad input therefore still fails CI. What lives here is the
+# SEARCH for new inputs, which costs runner minutes by the minute.
 #
-# Three ways in:
-#   - nightly schedule        long soak against the whole corpus
-#   - manual dispatch         pick a duration, e.g. before cutting a release
-#   - the `fuzz` PR label     when a PR actually touches a parser
+# ---------------------------------------------------------------------------
+# The schedule exists, but is OFF by default — on purpose
+# ---------------------------------------------------------------------------
+# The cron below fires, but the job is gated on the `FUZZ_SCHEDULE` repository
+# variable, which does not exist in a fresh repo — so the run is created and the
+# job is skipped. A skipped job allocates no runner and bills no minutes.
+#
+# That matters because this is a template: every repo generated from it inherits
+# this workflow. A nightly soak at 10m/target is ~2,493 minutes a month, which
+# on its own exceeds the 2,000 free Actions minutes a private repo gets. Nobody
+# should inherit that bill by accident — so turning it on is a deliberate
+# one-line act in YOUR repo, not a default in this one.
+#
+# Enable it without touching any code:
+#
+#   gh variable set FUZZ_SCHEDULE --body true
+#   gh variable set FUZZ_SCHEDULE_FUZZTIME --body 5m    # optional, default 5m
+#
+# Disable again:
+#
+#   gh variable delete FUZZ_SCHEDULE
+#
+# Cadence is the cron below; shipped as weekly (Sunday 03:17 UTC).
+#
+# Cost baseline — 8 fuzz targets plus ~2 min checkout/setup per run:
+#
+#   cadence   per target   per run     per month
+#   weekly    2m           ~18 min     ~78 min
+#   weekly    5m           ~42 min     ~182 min    <- shipped cadence + default
+#   nightly   2m           ~18 min     ~547 min
+#   nightly   5m           ~42 min     ~1,277 min
+#   nightly   10m          ~82 min     ~2,493 min  <- exceeds a private free tier
+#
+# Public repos get unlimited free minutes on standard runners, so this only
+# costs anything in a private repo (Free 2,000/mo, Pro 3,000, Team 3,000).
+# Note GitHub also disables scheduled workflows in a public repo after 60 days
+# with no repository activity.
+# ---------------------------------------------------------------------------
 on:
-  schedule:
-    # 03:17 UTC — off the hour, so it does not pile onto the rush of jobs
-    # everyone else schedules at :00.
-    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       fuzztime:
@@ -26,6 +55,10 @@ on:
         default: "5m"
   pull_request:
     types: [labeled]
+  schedule:
+    # Weekly, Sunday 03:17 UTC — off the hour, so it does not pile onto the rush
+    # of jobs everyone else schedules at :00. Inert unless FUZZ_SCHEDULE is set.
+    - cron: "17 3 * * 0"
 
 permissions:
   contents: read
@@ -33,8 +66,8 @@ permissions:
 env:
   GOEXPERIMENT: jsonv2
 
-# Never cancel a soak that is already running: a long fuzz run that gets killed
-# halfway has told you nothing, and the corpus it built is thrown away.
+# Never cancel a soak already in flight: a fuzz run killed halfway has told you
+# nothing and throws away the corpus it built.
 concurrency:
   group: fuzz-${{ github.ref }}
   cancel-in-progress: false
@@ -42,10 +75,15 @@ concurrency:
 jobs:
   fuzz:
     name: Fuzz targets
-    # On a pull_request this triggers for EVERY label; run only for `fuzz`.
-    if: github.event_name != 'pull_request' || github.event.label.name == 'fuzz'
+    # Every trigger is opted into explicitly. `pull_request` fires for EVERY
+    # label, so it is narrowed to `fuzz`; `schedule` stays inert until someone
+    # sets FUZZ_SCHEDULE. Skipping here costs no runner minutes.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.label.name == 'fuzz') ||
+      (github.event_name == 'schedule' && vars.FUZZ_SCHEDULE == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -53,22 +91,25 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # A label-triggered run is someone asking about one PR; keep it short
-      # enough to be useful in review. The nightly is the real soak.
+      # Per-trigger budget. A label run is someone asking about one PR, so it is
+      # kept short enough to be useful in review; a scheduled run is the soak and
+      # reads its duration from a variable, so cadence and budget are both
+      # configurable without editing this file.
       - name: Resolve duration
         id: cfg
         run: |
           case "${{ github.event_name }}" in
             workflow_dispatch) t="${{ inputs.fuzztime }}" ;;
             pull_request)      t="60s" ;;
-            *)                 t="10m" ;;
+            schedule)          t="${{ vars.FUZZ_SCHEDULE_FUZZTIME || '5m' }}" ;;
+            *)                 t="5m" ;;
           esac
           echo "fuzztime=$t" >> "$GITHUB_OUTPUT"
-          echo "fuzzing each target for $t"
+          echo "trigger=${{ github.event_name }}, fuzzing each target for $t"
 
-      # Cache the generated corpus between runs so each night resumes from the
-      # coverage the last one reached instead of starting cold. Restoring an
-      # older key is fine and expected — the corpus only ever grows.
+      # Cache the generated corpus so a later run resumes from the coverage an
+      # earlier one reached instead of starting cold. Restoring an older key is
+      # expected — the corpus only ever grows.
       - name: Cache fuzz corpus
         uses: actions/cache@v4
         with:

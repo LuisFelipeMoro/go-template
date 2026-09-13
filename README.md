@@ -82,9 +82,50 @@ Four things here are not the Go default and are deliberate:
   case, plus anything committed under `testdata/fuzz/` after a crash), so the
   PR pipeline does gate on known-bad inputs — a crash found once becomes a
   permanent regression test. Searching for **new** inputs needs `-fuzz`, costs
-  minutes, and is therefore opt-in: a nightly soak, a manual
-  `workflow_dispatch`, or the `fuzz` label on a PR that touches a parser. See
+  runner minutes by the minute, and so lives in its own workflow:
   `.github/workflows/fuzz.yml`.
+
+#### Enabling the scheduled fuzz soak
+
+The workflow has a weekly `schedule:` trigger, and it ships **disabled**. The
+cron fires, but the job is gated on a repository variable that does not exist in
+a fresh repo, so the run is created and the job skips — and **a skipped job
+allocates no runner, so it bills no minutes**.
+
+That default is deliberate: this is a template, so every repo generated from it
+inherits this workflow. A nightly soak at 10m/target is ~2,493 minutes a month,
+which on its own exceeds the 2,000 free Actions minutes a private repo gets.
+Nobody should inherit that bill by accident.
+
+Turn it on with one variable — no code change:
+
+```bash
+gh variable set FUZZ_SCHEDULE --body true
+gh variable set FUZZ_SCHEDULE_FUZZTIME --body 5m   # optional, default 5m
+gh variable delete FUZZ_SCHEDULE                   # turn it back off
+```
+
+Cadence is the `cron:` in the workflow (shipped weekly, Sunday 03:17 UTC).
+
+**Cost baseline** — 8 fuzz targets plus ~2 min checkout/setup per run:
+
+| Cadence | Per target | Per run | Per month |
+|---|---|---|---|
+| *off (as shipped)* | — | — | **0 min** |
+| weekly | 2m | ~18 min | ~78 min |
+| weekly | 5m | ~42 min | ~182 min ← default when enabled |
+| nightly | 2m | ~18 min | ~547 min |
+| nightly | 5m | ~42 min | ~1,277 min |
+| nightly | 10m | ~82 min | ~2,493 min ← over a private free tier |
+
+Public repos get **unlimited** free minutes on standard runners, so this only
+costs anything in a private repo (Free 2,000/mo, Pro 3,000, Team 3,000). Note
+GitHub also disables scheduled workflows in a public repo after 60 days with no
+repository activity.
+
+Two triggers work regardless of that variable: a manual run
+(`gh workflow run Fuzz -f fuzztime=10m`) and the **`fuzz` label** on a PR, which
+fuzzes 60s per target — the one to reach for when a PR actually touches a parser.
 - **Benchmarks report allocations.** `b.ReportAllocs()` everywhere: an
   optimization that cuts time but adds allocations is usually a loss. Compare
   runs with `benchstat`, never a single execution.
@@ -463,9 +504,50 @@ Quatro pontos aqui não são o padrão do Go e são deliberados:
   (cada `f.Add`, mais o que estiver commitado em `testdata/fuzz/` após um
   crash), então o pipeline de PR cobra entradas sabidamente ruins — um crash
   achado uma vez vira teste de regressão permanente. Buscar entradas **novas**
-  exige `-fuzz`, custa minutos e por isso é opt-in: soak noturno,
-  `workflow_dispatch` manual, ou a label `fuzz` num PR que mexe em parser. Veja
-  `.github/workflows/fuzz.yml`.
+  exige `-fuzz`, custa minutos de runner por minuto, e por isso vive num
+  workflow próprio: `.github/workflows/fuzz.yml`.
+
+#### Ativando o soak agendado de fuzz
+
+O workflow tem um gatilho `schedule:` semanal, e ele vem **desligado**. O cron
+dispara, mas o job é barrado por uma variável de repositório que não existe num
+repo novo — então a run é criada e o job é pulado, e **job pulado não aloca
+runner, logo não cobra minutos**.
+
+Esse padrão é proposital: isto é um template, então todo repo gerado a partir
+dele herda este workflow. Um soak noturno a 10m/alvo dá ~2.493 minutos por mês,
+o que sozinho já estoura os 2.000 minutos gratuitos de Actions de um repositório
+privado. Ninguém deveria herdar essa conta sem querer.
+
+Ligue com uma variável — sem mudar código:
+
+```bash
+gh variable set FUZZ_SCHEDULE --body true
+gh variable set FUZZ_SCHEDULE_FUZZTIME --body 5m   # opcional, padrão 5m
+gh variable delete FUZZ_SCHEDULE                   # desliga de novo
+```
+
+A cadência é o `cron:` do workflow (semanal, domingo 03:17 UTC).
+
+**Baseline de custo** — 8 alvos de fuzz mais ~2 min de checkout/setup por run:
+
+| Cadência | Por alvo | Por run | Por mês |
+|---|---|---|---|
+| *desligado (como vem)* | — | — | **0 min** |
+| semanal | 2m | ~18 min | ~78 min |
+| semanal | 5m | ~42 min | ~182 min ← padrão ao ligar |
+| noturno | 2m | ~18 min | ~547 min |
+| noturno | 5m | ~42 min | ~1.277 min |
+| noturno | 10m | ~82 min | ~2.493 min ← acima do tier grátis privado |
+
+Repositórios públicos têm minutos **ilimitados** em runners padrão, então isso
+só custa algo em repositório privado (Free 2.000/mês, Pro 3.000, Team 3.000). O
+GitHub também desativa workflows agendados num repo público após 60 dias sem
+atividade.
+
+Dois gatilhos funcionam independentemente dessa variável: run manual
+(`gh workflow run Fuzz -f fuzztime=10m`) e a label **`fuzz`** num PR, que fuzza
+60s por alvo — o atalho para quando o PR realmente mexe num parser.
 - **Benchmarks reportam alocações.** `b.ReportAllocs()` em todos: uma otimização
   que corta tempo mas adiciona alocações normalmente é prejuízo. Compare
   execuções com `benchstat`, nunca uma corrida só.
