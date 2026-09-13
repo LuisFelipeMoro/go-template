@@ -1,8 +1,8 @@
 module github.com/luisfelipecoelho/go-template
 
-go 1.26.0
+go 1.27.0
 
-toolchain go1.26.6
+toolchain go1.27.1
 
 require (
 	github.com/gin-gonic/gin v1.12.0

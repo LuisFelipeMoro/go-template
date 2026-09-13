@@ -63,9 +63,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GOEXPERIMENT: jsonv2
-
 # Never cancel a soak already in flight: a fuzz run killed halfway has told you
 # nothing and throws away the corpus it built.
 concurrency:

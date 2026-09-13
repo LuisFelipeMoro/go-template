@@ -1,6 +1,6 @@
 # go-template
 
-Production-ready Go 1.26 microservice template — standard Go layout (`cmd`/`internal`/`pkg`) with package-by-domain organization, explicit dependency injection, gin HTTP + async worker, OpenTelemetry, graceful shutdown, Docker & Kubernetes native.
+Production-ready Go 1.27 microservice template — standard Go layout (`cmd`/`internal`/`pkg`) with package-by-domain organization, explicit dependency injection, gin HTTP + async worker, OpenTelemetry, graceful shutdown, Docker & Kubernetes native.
 
 > 🇧🇷 [Versão em português abaixo](#go-template-português)
 
@@ -47,7 +47,7 @@ still recognize a year later. Everything below is wired, tested, and documented
 
 ## Prerequisites
 
-- Go 1.26+
+- Go 1.27+
 - make
 - Docker (+ Compose v2) — for the local stack
 - kubectl (with kustomize) — for deploys
@@ -143,7 +143,7 @@ Two knobs fix findings, and which one depends on where the finding lives:
 
 | Finding in | Fix |
 |---|---|
-| the standard library | raise the `toolchain` directive in `go.mod` (currently `go1.26.6`) |
+| the standard library | raise the `toolchain` directive in `go.mod` (currently `go1.27.1`) |
 | a dependency | `go get <module>@<fixed version> && go mod tidy` |
 
 One advisory is reported only under `govulncheck -show verbose` and can never be
@@ -425,7 +425,7 @@ MIT — see [LICENSE](LICENSE).
 
 # go-template (Português)
 
-Template de microsserviço Go 1.26 pronto para produção — layout padrão Go (`cmd`/`internal`/`pkg`) com organização por domínio, injeção de dependência explícita, HTTP com gin + worker assíncrono, OpenTelemetry, graceful shutdown, nativo para Docker e Kubernetes.
+Template de microsserviço Go 1.27 pronto para produção — layout padrão Go (`cmd`/`internal`/`pkg`) com organização por domínio, injeção de dependência explícita, HTTP com gin + worker assíncrono, OpenTelemetry, graceful shutdown, nativo para Docker e Kubernetes.
 
 ## Conteúdo
 
@@ -469,7 +469,7 @@ documentado — e as partes que você não precisa podem ser removidas sem sobra
 
 ## Pré-requisitos
 
-- Go 1.26+
+- Go 1.27+
 - make
 - Docker (+ Compose v2) — para a stack local
 - kubectl (com kustomize) — para deploys
@@ -565,7 +565,7 @@ Dois botões resolvem um achado, e qual deles depende de onde ele está:
 
 | Achado em | Correção |
 |---|---|
-| biblioteca padrão | suba a diretiva `toolchain` no `go.mod` (hoje `go1.26.6`) |
+| biblioteca padrão | suba a diretiva `toolchain` no `go.mod` (hoje `go1.27.1`) |
 | dependência | `go get <módulo>@<versão corrigida> && go mod tidy` |
 
 Um aviso só aparece com `govulncheck -show verbose` e nunca pode ser zerado:

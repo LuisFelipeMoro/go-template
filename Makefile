@@ -12,14 +12,16 @@ ENV        ?= dev
 # Tool versions are pinned and MUST match .github/workflows/ci.yml. With
 # @latest, a tool that gains a check between your run and CI's fails the build
 # only after you push — local and CI must reach the same verdict.
-GOLANGCI_VERSION  := v2.12.2
+#
+# golangci-lint must also be built with a Go at least as new as this module's
+# `go` directive: its release binary embeds a toolchain, and an older one
+# refuses the module outright ("the Go language version used to build
+# golangci-lint is lower than the targeted Go version"). v2.13.2 is the first
+# release built with go1.27 — do not pin below it while go.mod targets 1.27.
+GOLANGCI_VERSION  := v2.13.2
 GOVULNCHECK_VERSION := v1.6.0
 JSCPD_VERSION       := 4.0.5
 
-# json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26.
-# Export it so every go invocation below — build, test, vet, govulncheck —
-# compiles the v2 packages. Remove once json/v2 graduates to the default.
-export GOEXPERIMENT := jsonv2
 LDFLAGS    := -s -w \
 	-X $(MODULE)/internal/cli.version=$(VERSION) \
 	-X $(MODULE)/internal/cli.commit=$(COMMIT) \

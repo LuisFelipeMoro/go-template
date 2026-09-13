@@ -9,11 +9,6 @@ on:
 permissions:
   contents: read
 
-# json/v2 (encoding/json/v2 + jsontext) is behind GOEXPERIMENT in Go 1.26 —
-# set it for every job so build, vet, test, and govulncheck compile the v2 pkgs.
-env:
-  GOEXPERIMENT: jsonv2
-
 # Cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
@@ -58,10 +53,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # v2.13.2 is the first release built with go1.27. The action downloads a
+      # PREBUILT binary, and one built with an older Go refuses a module whose
+      # `go` directive is newer, so this pin cannot drop below it while go.mod
+      # targets 1.27. Keep it equal to GOLANGCI_VERSION in the Makefile.
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.13.2
 
       - name: Test (race) + coverage gate
         run: |
@@ -83,7 +82,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/go/bin/govulncheck
-          key: govulncheck-${{ runner.os }}-v1.6.0
+          key: govulncheck-${{ runner.os }}-v1.6.0-go1.27
 
       - name: Vulnerabilities
         run: |
