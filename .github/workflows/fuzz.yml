@@ -1,0 +1,106 @@
+name: Fuzz
+
+# Generative fuzzing is opt-in, deliberately not part of the PR pipeline.
+#
+# The reasoning: seed corpora (every f.Add case, plus anything committed under
+# testdata/fuzz/ after a crash) are replayed by the ordinary `go test` run in
+# ci.yml. So a regression against a known-bad input still fails every PR. What
+# runs here is the SEARCH for new inputs, which costs minutes per run and is far
+# more productive as one long nightly soak than as a 20-second slice bolted onto
+# every push.
+#
+# Three ways in:
+#   - nightly schedule        long soak against the whole corpus
+#   - manual dispatch         pick a duration, e.g. before cutting a release
+#   - the `fuzz` PR label     when a PR actually touches a parser
+on:
+  schedule:
+    # 03:17 UTC — off the hour, so it does not pile onto the rush of jobs
+    # everyone else schedules at :00.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Duration per fuzz target (Go duration, e.g. 60s, 5m, 1h)"
+        required: false
+        default: "5m"
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+env:
+  GOEXPERIMENT: jsonv2
+
+# Never cancel a soak that is already running: a long fuzz run that gets killed
+# halfway has told you nothing, and the corpus it built is thrown away.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz targets
+    # On a pull_request this triggers for EVERY label; run only for `fuzz`.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'fuzz'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # A label-triggered run is someone asking about one PR; keep it short
+      # enough to be useful in review. The nightly is the real soak.
+      - name: Resolve duration
+        id: cfg
+        run: |
+          case "${{ github.event_name }}" in
+            workflow_dispatch) t="${{ inputs.fuzztime }}" ;;
+            pull_request)      t="60s" ;;
+            *)                 t="10m" ;;
+          esac
+          echo "fuzztime=$t" >> "$GITHUB_OUTPUT"
+          echo "fuzzing each target for $t"
+
+      # Cache the generated corpus between runs so each night resumes from the
+      # coverage the last one reached instead of starting cold. Restoring an
+      # older key is fine and expected — the corpus only ever grows.
+      - name: Cache fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-
+
+      # Go fuzzes ONE target per invocation, so each is driven in turn. A crash
+      # writes its input to testdata/fuzz/<Target>/ — that file is uploaded
+      # below and should be committed, which turns the crash into a permanent
+      # regression test replayed by every future `go test`.
+      - name: Fuzz
+        run: |
+          set -e
+          failed=0
+          for pkg in $(go list ./cmd/... ./internal/... ./pkg/...); do
+            for fn in $(go test -list='^Fuzz' "$pkg" 2>/dev/null | grep '^Fuzz' || true); do
+              echo "::group::$fn ($pkg)"
+              if ! go test -run='^$' -fuzz="^${fn}$" -fuzztime='${{ steps.cfg.outputs.fuzztime }}' "$pkg"; then
+                echo "::error::$fn found a failing input in $pkg"
+                failed=1
+              fi
+              echo "::endgroup::"
+            done
+          done
+          exit "$failed"
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore

@@ -42,7 +42,7 @@ still recognize a year later. Everything below is wired, tested, and documented
 - **Resiliency** — context-aware retry (exponential backoff + jitter) and circuit breaker blueprints; per-request handler deadlines that actually cancel downstream work; graceful shutdown draining in-flight work on SIGTERM.
 - **Secure by default** — bearer auth that *fails closed* in prod, constant-time key comparison, strict JSON decoding, security headers, request body limits, distroless non-root image, and a `.golangci.yml` running `gosec`/`errorlint`/`bodyclose` in CI.
 - **Contract-first HTTP** — `api-spec.yaml` (OpenAPI 3.1) with Spectral linting; sample CRUD domain at `/v1/items`; `/healthz` + `/readyz` probes.
-- **Gates that can actually fail** — race detector, ≥85% coverage, `govulncheck` at zero, `jscpd` duplication ≤3%, goroutine-leak detection on every package that starts one, fuzz targets on every parser, and benchmarks with allocation counts. `make gates` runs the lot.
+- **Gates that can actually fail** — race detector, ≥85% coverage, `govulncheck` at zero, `jscpd` duplication ≤3%, goroutine-leak detection on every package that starts one, fuzz targets on every parser (seeds gate every PR; the generative soak is opt-in), and benchmarks with allocation counts. `make gates` runs the lot.
 - **Ship-ready packaging** — multi-stage Dockerfile (distroless, non-root, static), docker-compose with an OTel collector, and a Kustomize base wired for zero-downtime rollouts: server + worker Deployments, Service, HPA, PodDisruptionBudget, `preStop` drain hook, topology spread, and a hashed ConfigMap.
 
 ## Prerequisites
@@ -64,7 +64,7 @@ make vuln     # govulncheck, must be zero
 make gates    # all of the above, the same set CI enforces
 
 make bench                 # every benchmark, with allocs/op
-make fuzz                  # every fuzz target, 30s each
+make fuzz                  # every fuzz target, 30s each (opt-in; see below)
 make fuzz FUZZTIME=5m      # longer soak before a release
 ```
 
@@ -76,8 +76,15 @@ Four things here are not the Go default and are deliberate:
 - **Parsers are fuzzed, not just table-tested.** `web.BindJSON`, `uid.Validate`
   and the domain validators have fuzz targets asserting invariants that must
   hold for *every* input — no panic, and acceptance implies the documented
-  bounds. Seed corpora are committed, so a crash found once becomes a permanent
-  regression test.
+  bounds.
+
+  Note what runs when. Plain `go test` executes every **seed** (each `f.Add`
+  case, plus anything committed under `testdata/fuzz/` after a crash), so the
+  PR pipeline does gate on known-bad inputs — a crash found once becomes a
+  permanent regression test. Searching for **new** inputs needs `-fuzz`, costs
+  minutes, and is therefore opt-in: a nightly soak, a manual
+  `workflow_dispatch`, or the `fuzz` label on a PR that touches a parser. See
+  `.github/workflows/fuzz.yml`.
 - **Benchmarks report allocations.** `b.ReportAllocs()` everywhere: an
   optimization that cuts time but adds allocations is usually a loss. Compare
   runs with `benchstat`, never a single execution.
@@ -438,7 +445,7 @@ make vuln     # govulncheck, tem que ser zero
 make gates    # tudo acima, o mesmo conjunto que o CI cobra
 
 make bench                 # todos os benchmarks, com allocs/op
-make fuzz                  # todos os alvos de fuzz, 30s cada
+make fuzz                  # todos os alvos de fuzz, 30s cada (opt-in; veja abaixo)
 make fuzz FUZZTIME=5m      # soak mais longo antes de uma release
 ```
 
@@ -450,8 +457,15 @@ Quatro pontos aqui não são o padrão do Go e são deliberados:
 - **Parsers são fuzzados, não só testados por tabela.** `web.BindJSON`,
   `uid.Validate` e os validadores de domínio têm alvos de fuzz afirmando
   invariantes que valem para *qualquer* entrada — sem panic, e aceitar implica
-  os limites documentados. Os corpora semente são commitados: um crash achado
-  uma vez vira teste de regressão permanente.
+  os limites documentados.
+
+  Repare no que roda quando. O `go test` comum executa todas as **sementes**
+  (cada `f.Add`, mais o que estiver commitado em `testdata/fuzz/` após um
+  crash), então o pipeline de PR cobra entradas sabidamente ruins — um crash
+  achado uma vez vira teste de regressão permanente. Buscar entradas **novas**
+  exige `-fuzz`, custa minutos e por isso é opt-in: soak noturno,
+  `workflow_dispatch` manual, ou a label `fuzz` num PR que mexe em parser. Veja
+  `.github/workflows/fuzz.yml`.
 - **Benchmarks reportam alocações.** `b.ReportAllocs()` em todos: uma otimização
   que corta tempo mas adiciona alocações normalmente é prejuízo. Compare
   execuções com `benchstat`, nunca uma corrida só.
